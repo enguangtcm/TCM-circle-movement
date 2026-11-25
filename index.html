@@ -39,9 +39,9 @@
     .layer-item {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       padding: 5px 4px;
-      font-size: 13.5px;
+      font-size: 13px;
       cursor: pointer;
       border-radius: 4px;
       white-space: nowrap;
@@ -74,14 +74,19 @@
       background: #d9dee7;
       margin: 0 2px;
     }
-    button, select, input[type="color"] {
+    button, select, input[type="color"], input[type="number"] {
       padding: 5px 9px;
       font-size: 13.5px;
+      font-family: "Microsoft JhengHei", "Noto Sans TC", sans-serif;
       cursor: pointer;
       border: 1px solid #cbd5e1;
       background: #fff;
       border-radius: 6px;
       white-space: nowrap;
+    }
+    input[type="number"] {
+      width: 62px;
+      cursor: text;
     }
     button:hover:not(:disabled) { background: #f1f5f9; }
     button:disabled {
@@ -99,9 +104,15 @@
       height: 30px;
     }
     input[type="range"] {
-      width: 80px;
+      width: 82px;
       vertical-align: middle;
       cursor: pointer;
+    }
+    .inline-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 13px;
     }
     /* 以左上角為放大起點 */
     #viewer-container {
@@ -138,9 +149,9 @@
     }
     .floating-text-box {
       position: absolute;
-      padding: 3px 7px;
+      padding: 4px 8px;
       border: 1px dashed rgba(29, 78, 216, 0.65);
-      background: rgba(255, 255, 255, 0.85);
+      background: rgba(255, 255, 255, 0.88);
       border-radius: 4px;
       cursor: move;
       user-select: none;
@@ -155,25 +166,30 @@
       border: 1.5px solid #1d4ed8;
       box-shadow: 0 2px 8px rgba(29, 78, 216, 0.25);
     }
+    /* 編輯與刪除移到文字框下方，避免遮住文字 */
     .floating-text-actions {
       display: none;
       position: absolute;
-      top: -24px;
-      right: 0;
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
       gap: 4px;
       background: #ffffff;
       border: 1px solid #cbd5e1;
       border-radius: 4px;
-      padding: 1px 4px;
-      font-size: 11px;
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+      padding: 2px 5px;
+      font-size: 12px;
+      font-weight: normal;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+      white-space: nowrap;
+      z-index: 10;
     }
     .floating-text-box.selected .floating-text-actions {
-      display: flex;
+      display: inline-flex;
     }
     .floating-text-actions span {
       cursor: pointer;
-      padding: 1px 4px;
+      padding: 1px 5px;
       color: #1e293b;
     }
     .floating-text-actions span:hover {
@@ -208,26 +224,37 @@
     <div class="toolbar draw-bar">
       <strong style="font-size: 13.5px;">繪圖工具：</strong>
       <button id="tool-none" class="active">瀏覽模式</button>
-      <button id="tool-pen">隨意書寫</button>
+      <button id="tool-pen">隨意畫線</button>
       <button id="tool-line">直線</button>
       <button id="tool-arrow">箭頭</button>
-      <button id="tool-rect">長方形</button>
-      <button id="tool-circle">圓圈</button>
+      <button id="tool-circle">圓形</button>
+      <button id="tool-rect">正方形</button>
       <button id="tool-text">加文字</button>
-      <button id="tool-eraser">橡皮擦</button>
+
+      <span class="inline-group">
+        <button id="tool-eraser">橡皮擦</button>
+        <input type="range" id="eraser-size" min="8" max="60" value="20" title="橡皮擦大小" />
+        <span id="eraser-size-label">20</span>
+      </span>
+
       <span class="toolbar-divider"></span>
-      <label style="font-size: 13px;">顏色 <input type="color" id="draw-color" value="#e11d48" /></label>
-      <label style="font-size: 13px;">筆觸
-        <select id="draw-size">
+
+      <label class="inline-group">顏色
+        <input type="color" id="draw-color" value="#e11d48" />
+      </label>
+
+      <label class="inline-group">線寬
+        <select id="line-width">
           <option value="2">細</option>
-          <option value="4" selected>中</option>
-          <option value="8">粗</option>
+          <option value="5" selected>中等</option>
+          <option value="9">粗</option>
         </select>
       </label>
-      <label style="font-size: 13px;">橡皮擦大小
-        <input type="range" id="eraser-size" min="8" max="60" value="20" />
-        <span id="eraser-size-label">20</span>
+
+      <label class="inline-group">字級(8-36)
+        <input type="number" id="font-size" min="8" max="36" value="20" />
       </label>
+
       <button id="draw-undo" disabled>復原上一步</button>
       <button id="draw-clear">清除筆跡</button>
       <span class="toolbar-divider"></span>
@@ -250,6 +277,7 @@
 
     const PDF_URL = './chart.pdf';
     const HIDDEN_NUMBERS = [90, 16, 54];
+    const FONT_FAMILY = '"Microsoft JhengHei", "Noto Sans TC", sans-serif';
 
     let pdfDoc = null;
     let scale = 1.5;
@@ -258,7 +286,7 @@
     let visibleGroupIds = [];
 
     // 繪圖與復原狀態
-    let activeTool = 'none'; // 'none' | 'pen' | 'line' | 'arrow' | 'rect' | 'circle' | 'text' | 'eraser'
+    let activeTool = 'none'; // 'none' | 'pen' | 'line' | 'arrow' | 'circle' | 'rect' | 'text' | 'eraser'
     let isDrawing = false;
     let startX = 0;
     let startY = 0;
@@ -285,12 +313,33 @@
     const zoomLabelEl = document.getElementById('zoom-label');
     const viewerContainerEl = document.getElementById('viewer-container');
     const colorInput = document.getElementById('draw-color');
-    const sizeSelect = document.getElementById('draw-size');
+    const lineWidthSelect = document.getElementById('line-width');
+    const fontSizeInput = document.getElementById('font-size');
     const eraserSizeInput = document.getElementById('eraser-size');
     const eraserSizeLabel = document.getElementById('eraser-size-label');
     const undoBtn = document.getElementById('draw-undo');
     const clearBtn = document.getElementById('draw-clear');
     const downloadPngBtn = document.getElementById('download-png');
+
+    function clampFontSize(val) {
+      const num = parseInt(val, 10);
+      if (Number.isNaN(num)) return 20;
+      return Math.min(36, Math.max(8, num));
+    }
+
+    fontSizeInput.addEventListener('change', () => {
+      const validSize = clampFontSize(fontSizeInput.value);
+      fontSizeInput.value = validSize;
+
+      if (selectedTextId !== null) {
+        const target = textItems.find((t) => t.id === selectedTextId);
+        if (target && target.fontSize !== validSize) {
+          pushUndoState();
+          target.fontSize = validSize;
+          renderTextBoxes();
+        }
+      }
+    });
 
     eraserSizeInput.addEventListener('input', () => {
       eraserSizeLabel.textContent = eraserSizeInput.value;
@@ -346,495 +395,4 @@
       if (hasAnyPixel || textItems.length > 0) {
         pushUndoState();
       }
-      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-      textItems = [];
-      selectedTextId = null;
-      renderTextBoxes();
-    });
-
-    function renderTextBoxes() {
-      textLayerEl.innerHTML = '';
-      for (const item of textItems) {
-        const box = document.createElement('div');
-        box.className = 'floating-text-box' + (item.id === selectedTextId ? ' selected' : '');
-        box.style.left = `${item.x}px`;
-        box.style.top = `${item.y}px`;
-        box.style.color = item.color;
-        box.style.fontSize = `${item.fontSize}px`;
-
-        const actions = document.createElement('div');
-        actions.className = 'floating-text-actions';
-
-        const editSpan = document.createElement('span');
-        editSpan.textContent = '編輯';
-        editSpan.addEventListener('pointerdown', (e) => e.stopPropagation());
-        editSpan.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const updated = prompt('修改文字內容：', item.text);
-          if (updated && updated.trim()) {
-            pushUndoState();
-            item.text = updated.trim();
-            renderTextBoxes();
-          }
-        });
-
-        const delSpan = document.createElement('span');
-        delSpan.className = 'del-btn';
-        delSpan.textContent = '刪除';
-        delSpan.addEventListener('pointerdown', (e) => e.stopPropagation());
-        delSpan.addEventListener('click', (e) => {
-          e.stopPropagation();
-          pushUndoState();
-          textItems = textItems.filter((t) => t.id !== item.id);
-          if (selectedTextId === item.id) selectedTextId = null;
-          renderTextBoxes();
-        });
-
-        actions.appendChild(editSpan);
-        actions.appendChild(delSpan);
-
-        const contentSpan = document.createElement('span');
-        contentSpan.textContent = item.text;
-
-        box.appendChild(actions);
-        box.appendChild(contentSpan);
-
-        box.addEventListener('pointerdown', (e) => {
-          e.stopPropagation();
-          selectedTextId = item.id;
-          renderTextBoxes();
-
-          const targetBox = textLayerEl.querySelector(`.floating-text-box.selected`);
-          if (!targetBox) return;
-
-          pushUndoState();
-          draggingTextId = item.id;
-          const stackRect = textLayerEl.getBoundingClientRect();
-          textDragOffsetX = e.clientX - stackRect.left - item.x;
-          textDragOffsetY = e.clientY - stackRect.top - item.y;
-          targetBox.setPointerCapture(e.pointerId);
-        });
-
-        box.addEventListener('pointermove', (e) => {
-          if (draggingTextId !== item.id) return;
-          const stackRect = textLayerEl.getBoundingClientRect();
-          item.x = Math.max(0, e.clientX - stackRect.left - textDragOffsetX);
-          item.y = Math.max(0, e.clientY - stackRect.top - textDragOffsetY);
-          box.style.left = `${item.x}px`;
-          box.style.top = `${item.y}px`;
-        });
-
-        const stopTextDrag = (e) => {
-          if (draggingTextId === item.id) {
-            draggingTextId = null;
-            if (e && box.hasPointerCapture(e.pointerId)) {
-              box.releasePointerCapture(e.pointerId);
-            }
-          }
-        };
-
-        box.addEventListener('pointerup', stopTextDrag);
-        box.addEventListener('pointercancel', stopTextDrag);
-
-        textLayerEl.appendChild(box);
-      }
-    }
-
-    textLayerEl.addEventListener('pointerdown', (e) => {
-      if (e.target === textLayerEl && selectedTextId !== null) {
-        selectedTextId = null;
-        renderTextBoxes();
-      }
-    });
-
-    downloadPngBtn.addEventListener('click', () => {
-      if (canvas.width === 0 || canvas.height === 0) return;
-      const exportCanvas = document.createElement('canvas');
-      exportCanvas.width = canvas.width;
-      exportCanvas.height = canvas.height;
-      const exportCtx = exportCanvas.getContext('2d');
-
-      exportCtx.drawImage(canvas, 0, 0);
-      exportCtx.drawImage(drawCanvas, 0, 0);
-
-      for (const item of textItems) {
-        exportCtx.save();
-        exportCtx.font = `bold ${item.fontSize}px "Microsoft JhengHei", "Noto Sans TC", sans-serif`;
-        exportCtx.fillStyle = item.color;
-        exportCtx.textBaseline = 'top';
-        exportCtx.fillText(item.text, item.x + 7, item.y + 3);
-        exportCtx.restore();
-      }
-
-      const link = document.createElement('a');
-      const now = new Date();
-      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-      link.download = `chart_annotated_${Math.round(scale * 100)}pct_${stamp}.png`;
-      link.href = exportCanvas.toDataURL('image/png');
-      link.click();
-    });
-
-    const toolButtons = {
-      none: document.getElementById('tool-none'),
-      pen: document.getElementById('tool-pen'),
-      line: document.getElementById('tool-line'),
-      arrow: document.getElementById('tool-arrow'),
-      rect: document.getElementById('tool-rect'),
-      circle: document.getElementById('tool-circle'),
-      text: document.getElementById('tool-text'),
-      eraser: document.getElementById('tool-eraser'),
-    };
-
-    function setTool(toolName) {
-      activeTool = toolName;
-      Object.entries(toolButtons).forEach(([key, btn]) => {
-        btn.classList.toggle('active', key === toolName);
-      });
-      drawCanvas.style.cursor = toolName === 'none' ? 'default' : 'crosshair';
-    }
-
-    Object.entries(toolButtons).forEach(([key, btn]) => {
-      btn.addEventListener('click', () => setTool(key));
-    });
-
-    function getCanvasCoords(e) {
-      const rect = drawCanvas.getBoundingClientRect();
-      return {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
-      };
-    }
-
-    function drawArrowShape(targetCtx, x1, y1, x2, y2, lineWidth, color) {
-      const headLen = Math.max(12, lineWidth * 3.5);
-      const angle = Math.atan2(y2 - y1, x2 - x1);
-
-      targetCtx.save();
-      targetCtx.strokeStyle = color;
-      targetCtx.fillStyle = color;
-      targetCtx.lineWidth = lineWidth;
-      targetCtx.lineCap = 'round';
-      targetCtx.lineJoin = 'round';
-
-      targetCtx.beginPath();
-      targetCtx.moveTo(x1, y1);
-      targetCtx.lineTo(x2, y2);
-      targetCtx.stroke();
-
-      targetCtx.beginPath();
-      targetCtx.moveTo(x2, y2);
-      targetCtx.lineTo(
-        x2 - headLen * Math.cos(angle - Math.PI / 6),
-        y2 - headLen * Math.sin(angle - Math.PI / 6)
-      );
-      targetCtx.lineTo(
-        x2 - headLen * Math.cos(angle + Math.PI / 6),
-        y2 - headLen * Math.sin(angle + Math.PI / 6)
-      );
-      targetCtx.closePath();
-      targetCtx.fill();
-      targetCtx.restore();
-    }
-
-    drawCanvas.addEventListener('pointerdown', (e) => {
-      if (activeTool === 'none') return;
-      const { x, y } = getCanvasCoords(e);
-
-      if (activeTool === 'text') {
-        const text = prompt('請輸入要加入的文字（建立後可拖曳移動位置）：');
-        if (text && text.trim()) {
-          pushUndoState();
-          const newItem = {
-            id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            text: text.trim(),
-            x,
-            y,
-            color: colorInput.value,
-            fontSize: Math.max(16, Number(sizeSelect.value) * 5),
-          };
-          textItems.push(newItem);
-          selectedTextId = newItem.id;
-          renderTextBoxes();
-        }
-        return;
-      }
-
-      pushUndoState();
-      isDrawing = true;
-      hasStrokeMoved = false;
-      startX = x;
-      startY = y;
-      drawCanvas.setPointerCapture(e.pointerId);
-
-      if (['line', 'arrow', 'rect', 'circle'].includes(activeTool)) {
-        snapshot = drawCtx.getImageData(0, 0, drawCanvas.width, drawCanvas.height);
-      } else if (activeTool === 'pen' || activeTool === 'eraser') {
-        drawCtx.beginPath();
-        drawCtx.moveTo(x, y);
-      }
-    });
-
-    drawCanvas.addEventListener('pointermove', (e) => {
-      if (!isDrawing || activeTool === 'none' || activeTool === 'text') return;
-      const { x, y } = getCanvasCoords(e);
-      const lineWidth = Number(sizeSelect.value);
-      const color = colorInput.value;
-      hasStrokeMoved = true;
-
-      if (activeTool === 'pen') {
-        drawCtx.save();
-        drawCtx.globalCompositeOperation = 'source-over';
-        drawCtx.strokeStyle = color;
-        drawCtx.lineWidth = lineWidth;
-        drawCtx.lineCap = 'round';
-        drawCtx.lineJoin = 'round';
-        drawCtx.lineTo(x, y);
-        drawCtx.stroke();
-        drawCtx.restore();
-      } else if (activeTool === 'eraser') {
-        drawCtx.save();
-        drawCtx.globalCompositeOperation = 'destination-out';
-        drawCtx.lineWidth = Number(eraserSizeInput.value);
-        drawCtx.lineCap = 'round';
-        drawCtx.lineJoin = 'round';
-        drawCtx.lineTo(x, y);
-        drawCtx.stroke();
-        drawCtx.restore();
-      } else if (snapshot) {
-        drawCtx.putImageData(snapshot, 0, 0);
-
-        if (activeTool === 'line') {
-          drawCtx.save();
-          drawCtx.strokeStyle = color;
-          drawCtx.lineWidth = lineWidth;
-          drawCtx.lineCap = 'round';
-          drawCtx.beginPath();
-          drawCtx.moveTo(startX, startY);
-          drawCtx.lineTo(x, y);
-          drawCtx.stroke();
-          drawCtx.restore();
-        } else if (activeTool === 'arrow') {
-          drawArrowShape(drawCtx, startX, startY, x, y, lineWidth, color);
-        } else if (activeTool === 'rect') {
-          drawCtx.save();
-          drawCtx.strokeStyle = color;
-          drawCtx.lineWidth = lineWidth;
-          drawCtx.strokeRect(
-            Math.min(x, startX),
-            Math.min(y, startY),
-            Math.abs(x - startX),
-            Math.abs(y - startY)
-          );
-          drawCtx.restore();
-        } else if (activeTool === 'circle') {
-          const rx = Math.abs(x - startX) / 2;
-          const ry = Math.abs(y - startY) / 2;
-          const cx = Math.min(x, startX) + rx;
-          const cy = Math.min(y, startY) + ry;
-
-          drawCtx.save();
-          drawCtx.strokeStyle = color;
-          drawCtx.lineWidth = lineWidth;
-          drawCtx.beginPath();
-          drawCtx.ellipse(cx, cy, Math.max(1, rx), Math.max(1, ry), 0, 0, Math.PI * 2);
-          drawCtx.stroke();
-          drawCtx.restore();
-        }
-      }
-    });
-
-    function finishDrawing(e) {
-      if (!isDrawing) return;
-      isDrawing = false;
-      snapshot = null;
-      if (!hasStrokeMoved && undoStack.length > 0) {
-        undoStack.pop();
-        updateUndoButton();
-      }
-      hasStrokeMoved = false;
-      if (e && drawCanvas.hasPointerCapture(e.pointerId)) {
-        drawCanvas.releasePointerCapture(e.pointerId);
-      }
-    }
-
-    drawCanvas.addEventListener('pointerup', finishDrawing);
-    drawCanvas.addEventListener('pointercancel', finishDrawing);
-
-    toggleSidebarBtn.addEventListener('click', () => {
-      const isCollapsed = sidebarEl.classList.toggle('collapsed');
-      toggleSidebarBtn.textContent = isCollapsed ? '展開圖層' : '收合圖層';
-    });
-
-    function extractLeadingNumber(name) {
-      const normalized = String(name || '')
-        .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
-        .trim();
-      const match = normalized.match(/^(\d+)/);
-      return match ? parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
-    }
-
-    function isHiddenLayer(name) {
-      const num = extractLeadingNumber(name);
-      return HIDDEN_NUMBERS.includes(num);
-    }
-
-    async function renderLayersUI() {
-      layersListEl.innerHTML = '';
-      visibleGroupIds = [];
-
-      if (!optionalContentConfig) {
-        layersListEl.textContent = '此 PDF 未包含圖層資訊';
-        return;
-      }
-
-      const groups = optionalContentConfig.getGroups();
-      if (!groups || Object.keys(groups).length === 0) {
-        layersListEl.textContent = '找不到可用圖層';
-        return;
-      }
-
-      for (const [groupId, group] of Object.entries(groups)) {
-        const layerName = group.name || groupId;
-        if (isHiddenLayer(layerName)) {
-          optionalContentConfig.setVisibility(groupId, false);
-        }
-      }
-
-      const entries = Object.entries(groups)
-        .filter(([groupId, group]) => !isHiddenLayer(group.name || groupId))
-        .sort((a, b) => {
-          const nameA = a[1].name || a[0];
-          const nameB = b[1].name || b[0];
-          const numA = extractLeadingNumber(nameA);
-          const numB = extractLeadingNumber(nameB);
-
-          if (numA !== numB) return numA - numB;
-          return String(nameA).localeCompare(String(nameB), 'zh-Hant');
-        });
-
-      for (const [groupId, group] of entries) {
-        visibleGroupIds.push(groupId);
-
-        const label = document.createElement('label');
-        label.className = 'layer-item';
-
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.dataset.groupId = groupId;
-        checkbox.checked = optionalContentConfig.isVisible(groupId);
-
-        checkbox.addEventListener('change', async () => {
-          optionalContentConfig.setVisibility(groupId, checkbox.checked);
-          await renderPage();
-        });
-
-        const text = document.createElement('span');
-        text.textContent = group.name || groupId;
-
-        label.appendChild(checkbox);
-        label.appendChild(text);
-        layersListEl.appendChild(label);
-      }
-    }
-
-    async function setAllLayersVisibility(checked) {
-      if (!optionalContentConfig || visibleGroupIds.length === 0) return;
-
-      for (const groupId of visibleGroupIds) {
-        optionalContentConfig.setVisibility(groupId, checked);
-      }
-
-      const checkboxes = layersListEl.querySelectorAll('input[type="checkbox"]');
-      checkboxes.forEach((cb) => {
-        cb.checked = checked;
-      });
-
-      await renderPage();
-    }
-
-    async function renderPage() {
-      if (!pdfDoc) return;
-      if (renderTask) renderTask.cancel();
-
-      const page = await pdfDoc.getPage(1);
-      const viewport = page.getViewport({ scale });
-
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-
-      const prevDrawing = document.createElement('canvas');
-      prevDrawing.width = drawCanvas.width;
-      prevDrawing.height = drawCanvas.height;
-      prevDrawing.getContext('2d').drawImage(drawCanvas, 0, 0);
-
-      drawCanvas.height = viewport.height;
-      drawCanvas.width = viewport.width;
-      drawCtx.drawImage(prevDrawing, 0, 0, drawCanvas.width, drawCanvas.height);
-
-      textLayerEl.style.width = `${viewport.width}px`;
-      textLayerEl.style.height = `${viewport.height}px`;
-      renderTextBoxes();
-
-      zoomLabelEl.textContent = `${Math.round(scale * 100)}%`;
-      viewerContainerEl.scrollTop = 0;
-      viewerContainerEl.scrollLeft = 0;
-
-      renderTask = page.render({
-        canvasContext: ctx,
-        viewport,
-        optionalContentConfigPromise: Promise.resolve(optionalContentConfig),
-      });
-
-      try {
-        await renderTask.promise;
-      } catch (err) {
-        if (err?.name !== 'RenderingCancelledException') {
-          console.error(err);
-        }
-      }
-    }
-
-    document.getElementById('zoom-in').addEventListener('click', async () => {
-      scale = Math.min(6.0, +(scale + 0.5).toFixed(2));
-      await renderPage();
-    });
-
-    document.getElementById('zoom-out').addEventListener('click', async () => {
-      scale = Math.max(0.25, +(scale - 0.5).toFixed(2));
-      await renderPage();
-    });
-
-    document.getElementById('zoom-150').addEventListener('click', async () => {
-      scale = 1.5;
-      await renderPage();
-    });
-
-    document.getElementById('zoom-reset').addEventListener('click', async () => {
-      scale = 1.0;
-      await renderPage();
-    });
-
-    document.getElementById('layers-check-all').addEventListener('click', async () => {
-      await setAllLayersVisibility(true);
-    });
-
-    document.getElementById('layers-uncheck-all').addEventListener('click', async () => {
-      await setAllLayersVisibility(false);
-    });
-
-    async function init() {
-      try {
-        pdfDoc = await pdfjsLib.getDocument(PDF_URL).promise;
-        optionalContentConfig = await pdfDoc.getOptionalContentConfig();
-        await renderLayersUI();
-        await renderPage();
-      } catch (err) {
-        layersListEl.textContent = '載入失敗，請確認 chart.pdf 是否與 index.html 在同一層。';
-        console.error(err);
-      }
-    }
-
-    init();
-  </script>
-</body>
-</html>
+      drawCtx.clearRect(0, 0

@@ -115,7 +115,6 @@
       font-size: 13px;
     }
 
-    /* 調色盤按鈕與 Office 風格彈出面板 */
     .palette-wrapper {
       position: relative;
       display: inline-flex;
@@ -166,9 +165,7 @@
       border-radius: 3px;
       font-size: 13px;
     }
-    .palette-auto-row:hover {
-      background: #e2e8f0;
-    }
+    .palette-auto-row:hover { background: #e2e8f0; }
     .palette-auto-box {
       width: 18px;
       height: 18px;
@@ -227,9 +224,7 @@
       cursor: pointer;
       font-size: 13px;
     }
-    .palette-more-row:hover {
-      background: #e2e8f0;
-    }
+    .palette-more-row:hover { background: #e2e8f0; }
 
     .sticker-btn {
       display: inline-flex;
@@ -504,45 +499,17 @@
 
     <div id="viewer-container">
       <div id="canvas-stack">
-        <canvas id="pdf-canvas"></canvas>
-        <canvas id="draw-canvas"></canvas>
-        <svg id="vector-draw-layer" xmlns="http://www.w3.org/2000/svg"></svg>
+        <canvas id="pdf-canvas" width="600" height="360"></canvas>
+        <canvas id="draw-canvas" width="600" height="360"></canvas>
+        <svg id="vector-draw-layer" width="600" height="360" viewBox="0 0 600 360" xmlns="http://www.w3.org/2000/svg"></svg>
         <div id="eraser-cursor"></div>
-        <div id="overlay-layer"></div>
+        <div id="overlay-layer" style="width:600px;height:360px;"></div>
       </div>
     </div>
   </section>
 
+  <!-- 普通腳本：立即建立向量貼紙按鈕、調色盤、向量繪圖、橡皮擦、加文字、手抓移動與相對縮放 -->
   <script>
-    window.addEventListener('error', (ev) => {
-      const el = document.getElementById('layers-list');
-      if (el && el.textContent.includes('正在載入')) {
-        el.textContent = `腳本錯誤：${ev.message || '請按 F12 → 主控台查看'}`;
-      }
-    });
-    window.addEventListener('unhandledrejection', (ev) => {
-      const el = document.getElementById('layers-list');
-      if (el && el.textContent.includes('正在載入')) {
-        const reason = ev.reason?.message || String(ev.reason || '載入失敗');
-        el.textContent = `載入錯誤：${reason}`;
-      }
-    });
-  </script>
-
-  <script type="module">
-    let pdfjsLib;
-    try {
-      pdfjsLib = await import('https://unpkg.com/pdfjs-dist@4.6.82/build/pdf.min.mjs');
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://unpkg.com/pdfjs-dist@4.6.82/build/pdf.worker.min.mjs';
-    } catch (_) {
-      pdfjsLib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.mjs');
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.worker.min.mjs';
-    }
-
-    const PDF_URL = './chart.pdf';
-    const HIDDEN_NUMBERS = [90, 16, 54];
     const FONT_FAMILY = '"Microsoft JhengHei", "Noto Sans TC", sans-serif';
     const SVG_NS = 'http://www.w3.org/2000/svg';
     const BASE_SCALE = 1.5;
@@ -584,11 +551,7 @@
       { key: 'virus', label: '病毒', shape: 'oval', fill: 'none', stroke: '#000000', textColor: '#000000' },
     ];
 
-    let pdfDoc = null;
-    let scale = BASE_SCALE;
-    let optionalContentConfig = null;
-    let renderTask = null;
-    let visibleGroupIds = [];
+    window.__APP_STATE__ = window.__APP_STATE__ || { scale: BASE_SCALE };
 
     let activeTool = 'none';
     let isDrawing = false;
@@ -616,7 +579,6 @@
     const sidebarEl = document.getElementById('sidebar');
     const toggleSidebarBtn = document.getElementById('toggle-sidebar');
     const canvas = document.getElementById('pdf-canvas');
-    const ctx = canvas.getContext('2d');
     const drawCanvas = document.getElementById('draw-canvas');
     const drawCtx = drawCanvas.getContext('2d');
     const vectorDrawLayerEl = document.getElementById('vector-draw-layer');
@@ -625,8 +587,6 @@
     const stickerButtonsEl = document.getElementById('sticker-buttons');
     const stickerScaleInput = document.getElementById('sticker-scale');
     const stickerScaleLabel = document.getElementById('sticker-scale-label');
-    const layersListEl = document.getElementById('layers-list');
-    const zoomLabelEl = document.getElementById('zoom-label');
     const viewerContainerEl = document.getElementById('viewer-container');
     const colorInput = document.getElementById('draw-color');
     const paletteTrigger = document.getElementById('palette-trigger');
@@ -639,6 +599,31 @@
     const undoBtn = document.getElementById('draw-undo');
     const clearBtn = document.getElementById('draw-clear');
     const downloadPngBtn = document.getElementById('download-png');
+
+    function getCurrentScale() {
+      return window.__APP_STATE__?.scale || BASE_SCALE;
+    }
+
+    function getZoomRatio() {
+      return getCurrentScale() / BASE_SCALE;
+    }
+
+    function getLayerDimensions() {
+      return { w: canvas.width || 600, h: canvas.height || 360 };
+    }
+
+    function pxToRel(x, y) {
+      const { w, h } = getLayerDimensions();
+      return {
+        nx: Math.max(0, Math.min(1, x / w)),
+        ny: Math.max(0, Math.min(1, y / h)),
+      };
+    }
+
+    function relToPx(nx, ny) {
+      const { w, h } = getLayerDimensions();
+      return { x: nx * w, y: ny * h };
+    }
 
     function setSelectedColor(hex) {
       colorInput.value = hex;
@@ -729,39 +714,12 @@
       setSelectedColor('#ff0000');
     }
 
-    function getZoomRatio() {
-      return scale / BASE_SCALE;
-    }
-
-    function getLayerDimensions() {
-      const w = canvas.width || 1;
-      const h = canvas.height || 1;
-      return { w, h };
-    }
-
-    function pxToRel(x, y) {
-      const { w, h } = getLayerDimensions();
-      return {
-        nx: Math.max(0, Math.min(1, x / w)),
-        ny: Math.max(0, Math.min(1, y / h)),
-      };
-    }
-
-    function relToPx(nx, ny) {
-      const { w, h } = getLayerDimensions();
-      return {
-        x: nx * w,
-        y: ny * h,
-      };
-    }
-
     function createStickerSvgElement(def, itemScale = 1, zoomRatio = getZoomRatio()) {
       const svg = document.createElementNS(SVG_NS, 'svg');
       const effectiveScale = itemScale * zoomRatio;
 
       if (def.shape === 'ring') {
-        const baseSize = 72;
-        const size = Math.max(12, Math.round(baseSize * effectiveScale));
+        const size = Math.max(12, Math.round(72 * effectiveScale));
         svg.setAttribute('viewBox', '0 0 100 100');
         svg.setAttribute('width', size);
         svg.setAttribute('height', size);
@@ -787,8 +745,7 @@
         text.textContent = def.label;
         svg.appendChild(text);
       } else if (def.shape === 'circle') {
-        const baseSize = 68;
-        const size = Math.max(12, Math.round(baseSize * effectiveScale));
+        const size = Math.max(12, Math.round(68 * effectiveScale));
         svg.setAttribute('viewBox', '0 0 100 100');
         svg.setAttribute('width', size);
         svg.setAttribute('height', size);
@@ -812,10 +769,8 @@
         text.textContent = def.label;
         svg.appendChild(text);
       } else {
-        const baseW = 112;
-        const baseH = 68;
-        const w = Math.max(18, Math.round(baseW * effectiveScale));
-        const h = Math.max(12, Math.round(baseH * effectiveScale));
+        const w = Math.max(18, Math.round(112 * effectiveScale));
+        const h = Math.max(12, Math.round(68 * effectiveScale));
         svg.setAttribute('viewBox', '0 0 160 100');
         svg.setAttribute('width', w);
         svg.setAttribute('height', h);
@@ -842,7 +797,6 @@
         text.textContent = def.label;
         svg.appendChild(text);
       }
-
       return svg;
     }
 
@@ -890,3 +844,1037 @@
           renderOverlays();
         }
       }
+    });
+
+    function updateEraserCursorSize() {
+      const size = Number(eraserSizeInput?.value || 20);
+      eraserCursorEl.style.width = `${size}px`;
+      eraserCursorEl.style.height = `${size}px`;
+    }
+
+    function updateEraserCursorPosition(x, y) {
+      if (activeTool !== 'eraser') {
+        eraserCursorEl.style.display = 'none';
+        return;
+      }
+      updateEraserCursorSize();
+      eraserCursorEl.style.left = `${x}px`;
+      eraserCursorEl.style.top = `${y}px`;
+      eraserCursorEl.style.display = 'block';
+    }
+
+    eraserSizeInput?.addEventListener('input', () => {
+      if (eraserSizeLabel) eraserSizeLabel.textContent = eraserSizeInput.value;
+      updateEraserCursorSize();
+    });
+
+    function clampFontSize(val) {
+      const num = parseInt(val, 10);
+      if (Number.isNaN(num)) return 20;
+      return Math.min(36, Math.max(8, num));
+    }
+
+    fontSizeInput?.addEventListener('change', () => {
+      const validSize = clampFontSize(fontSizeInput.value);
+      fontSizeInput.value = validSize;
+      if (selectedTextId !== null) {
+        const target = textItems.find((t) => t.id === selectedTextId);
+        if (target && target.fontSize !== validSize) {
+          pushUndoState();
+          target.fontSize = validSize;
+          renderOverlays();
+        }
+      }
+    });
+
+    function cloneVectorShape(shape) {
+      return {
+        ...shape,
+        points: shape.points ? shape.points.map((p) => ({ ...p })) : undefined,
+      };
+    }
+
+    function createSnapshotRecord() {
+      return {
+        canvasDataUrl: drawCanvas.toDataURL('image/png'),
+        shapes: vectorShapes.map(cloneVectorShape),
+        texts: textItems.map((t) => ({ ...t })),
+        stickers: stickerItems.map((s) => ({ ...s })),
+      };
+    }
+
+    function updateUndoButton() {
+      if (undoBtn) undoBtn.disabled = undoStack.length === 0;
+    }
+
+    function pushUndoState() {
+      if (drawCanvas.width === 0 || drawCanvas.height === 0) return;
+      undoStack.push(createSnapshotRecord());
+      if (undoStack.length > MAX_UNDO) undoStack.shift();
+      updateUndoButton();
+    }
+
+    function restoreRecord(record) {
+      return new Promise((resolve) => {
+        vectorShapes = (record.shapes || []).map(cloneVectorShape);
+        textItems = (record.texts || []).map((t) => ({ ...t }));
+        stickerItems = (record.stickers || []).map((s) => ({ ...s }));
+        selectedShapeId = null;
+        selectedTextId = null;
+        selectedStickerId = null;
+        draftVectorShape = null;
+        renderVectorShapes();
+        renderOverlays();
+
+        const img = new Image();
+        img.onload = () => {
+          drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+          drawCtx.drawImage(img, 0, 0, drawCanvas.width, drawCanvas.height);
+          resolve();
+        };
+        img.src = record.canvasDataUrl;
+      });
+    }
+
+    undoBtn?.addEventListener('click', async () => {
+      if (undoStack.length === 0) return;
+      const prevRecord = undoStack.pop();
+      updateUndoButton();
+      await restoreRecord(prevRecord);
+    });
+
+    clearBtn?.addEventListener('click', () => {
+      const hasAnyPixel = drawCtx
+        .getImageData(0, 0, drawCanvas.width || 1, drawCanvas.height || 1)
+        .data.some((alpha) => alpha !== 0);
+      if (hasAnyPixel || vectorShapes.length > 0 || textItems.length > 0 || stickerItems.length > 0) {
+        pushUndoState();
+      }
+      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      vectorShapes = [];
+      textItems = [];
+      stickerItems = [];
+      selectedShapeId = null;
+      selectedTextId = null;
+      selectedStickerId = null;
+      draftVectorShape = null;
+      renderVectorShapes();
+      renderOverlays();
+    });
+
+    function distToSegment(px, py, x1, y1, x2, y2) {
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const lenSq = dx * dx + dy * dy;
+      if (lenSq === 0) return Math.hypot(px - x1, py - y1);
+      let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+    }
+
+    function isPointHittingShape(px, py, shape, radius) {
+      const { w, h } = getLayerDimensions();
+      const pad = radius + Math.max(2, (shape.lineWidth * getZoomRatio()) / 2);
+
+      if (shape.type === 'pen' && Array.isArray(shape.points)) {
+        if (shape.points.length === 1) {
+          const p0 = shape.points[0];
+          return Math.hypot(px - p0.nx * w, py - p0.ny * h) <= pad;
+        }
+        for (let i = 0; i < shape.points.length - 1; i++) {
+          const a = shape.points[i];
+          const b = shape.points[i + 1];
+          if (distToSegment(px, py, a.nx * w, a.ny * h, b.nx * w, b.ny * h) <= pad) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      const x1 = shape.nx1 * w;
+      const y1 = shape.ny1 * h;
+      const x2 = shape.nx2 * w;
+      const y2 = shape.ny2 * h;
+
+      if (shape.type === 'line' || shape.type === 'arrow') {
+        return distToSegment(px, py, x1, y1, x2, y2) <= pad;
+      }
+      if (shape.type === 'rect') {
+        const minX = Math.min(x1, x2);
+        const maxX = Math.max(x1, x2);
+        const minY = Math.min(y1, y2);
+        const maxY = Math.max(y1, y2);
+        return (
+          distToSegment(px, py, minX, minY, maxX, minY) <= pad ||
+          distToSegment(px, py, maxX, minY, maxX, maxY) <= pad ||
+          distToSegment(px, py, maxX, maxY, minX, maxY) <= pad ||
+          distToSegment(px, py, minX, maxY, minX, minY) <= pad
+        );
+      }
+      if (shape.type === 'circle') {
+        const rx = Math.max(1, Math.abs(x2 - x1) / 2);
+        const ry = Math.max(1, Math.abs(y2 - y1) / 2);
+        const cx = Math.min(x1, x2) + rx;
+        const cy = Math.min(y1, y2) + ry;
+        const normDist = Math.hypot((px - cx) / rx, (py - cy) / ry);
+        const avgR = (rx + ry) / 2;
+        return Math.abs(normDist - 1) * avgR <= pad;
+      }
+      return false;
+    }
+
+    function eraseVectorShapesAt(px, py) {
+      const radius = Number(eraserSizeInput?.value || 20) / 2;
+      const beforeLen = vectorShapes.length;
+      if (beforeLen === 0) return false;
+      const remaining = vectorShapes.filter((shape) => !isPointHittingShape(px, py, shape, radius));
+      if (remaining.length !== beforeLen) {
+        vectorShapes = remaining;
+        if (selectedShapeId && !vectorShapes.some((s) => s.id === selectedShapeId)) {
+          selectedShapeId = null;
+        }
+        renderVectorShapes();
+        return true;
+      }
+      return false;
+    }
+
+    function buildVectorShapeNode(shape, zoomRatio = getZoomRatio()) {
+      const { w, h } = getLayerDimensions();
+      const g = document.createElementNS(SVG_NS, 'g');
+      g.classList.add('vector-shape-group');
+      if (shape.id === selectedShapeId) g.classList.add('selected');
+
+      const strokeWidth = Math.max(1, shape.lineWidth * zoomRatio);
+      const color = shape.color;
+
+      if (shape.type === 'pen' && Array.isArray(shape.points) && shape.points.length > 0) {
+        const d = shape.points
+          .map((pt, idx) => `${idx === 0 ? 'M' : 'L'} ${(pt.nx * w).toFixed(1)} ${(pt.ny * h).toFixed(1)}`)
+          .join(' ');
+        const path = document.createElementNS(SVG_NS, 'path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', color);
+        path.setAttribute('stroke-width', strokeWidth);
+        path.setAttribute('stroke-linecap', 'round');
+        path.setAttribute('stroke-linejoin', 'round');
+        g.appendChild(path);
+      } else if (shape.type === 'line') {
+        const line = document.createElementNS(SVG_NS, 'line');
+        line.setAttribute('x1', shape.nx1 * w);
+        line.setAttribute('y1', shape.ny1 * h);
+        line.setAttribute('x2', shape.nx2 * w);
+        line.setAttribute('y2', shape.ny2 * h);
+        line.setAttribute('stroke', color);
+        line.setAttribute('stroke-width', strokeWidth);
+        line.setAttribute('stroke-linecap', 'round');
+        g.appendChild(line);
+      } else if (shape.type === 'arrow') {
+        const x1 = shape.nx1 * w;
+        const y1 = shape.ny1 * h;
+        const x2 = shape.nx2 * w;
+        const y2 = shape.ny2 * h;
+        const headLen = Math.max(8, strokeWidth * 3.2);
+        const angle = Math.atan2(y2 - y1, x2 - x1);
+
+        const line = document.createElementNS(SVG_NS, 'line');
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        line.setAttribute('stroke', color);
+        line.setAttribute('stroke-width', strokeWidth);
+        line.setAttribute('stroke-linecap', 'round');
+        g.appendChild(line);
+
+        const p1x = x2 - headLen * Math.cos(angle - Math.PI / 6);
+        const p1y = y2 - headLen * Math.sin(angle - Math.PI / 6);
+        const p2x = x2 - headLen * Math.cos(angle + Math.PI / 6);
+        const p2y = y2 - headLen * Math.sin(angle + Math.PI / 6);
+
+        const head = document.createElementNS(SVG_NS, 'polygon');
+        head.setAttribute('points', `${x2},${y2} ${p1x.toFixed(1)},${p1y.toFixed(1)} ${p2x.toFixed(1)},${p2y.toFixed(1)}`);
+        head.setAttribute('fill', color);
+        g.appendChild(head);
+      } else if (shape.type === 'circle') {
+        const x1 = shape.nx1 * w;
+        const y1 = shape.ny1 * h;
+        const x2 = shape.nx2 * w;
+        const y2 = shape.ny2 * h;
+        const rx = Math.max(1, Math.abs(x2 - x1) / 2);
+        const ry = Math.max(1, Math.abs(y2 - y1) / 2);
+        const cx = Math.min(x1, x2) + rx;
+        const cy = Math.min(y1, y2) + ry;
+
+        const ellipse = document.createElementNS(SVG_NS, 'ellipse');
+        ellipse.setAttribute('cx', cx);
+        ellipse.setAttribute('cy', cy);
+        ellipse.setAttribute('rx', rx);
+        ellipse.setAttribute('ry', ry);
+        ellipse.setAttribute('fill', 'none');
+        ellipse.setAttribute('stroke', color);
+        ellipse.setAttribute('stroke-width', strokeWidth);
+        g.appendChild(ellipse);
+      } else if (shape.type === 'rect') {
+        const x1 = shape.nx1 * w;
+        const y1 = shape.ny1 * h;
+        const x2 = shape.nx2 * w;
+        const y2 = shape.ny2 * h;
+        const rect = document.createElementNS(SVG_NS, 'rect');
+        rect.setAttribute('x', Math.min(x1, x2));
+        rect.setAttribute('y', Math.min(y1, y2));
+        rect.setAttribute('width', Math.abs(x2 - x1));
+        rect.setAttribute('height', Math.abs(y2 - y1));
+        rect.setAttribute('fill', 'none');
+        rect.setAttribute('stroke', color);
+        rect.setAttribute('stroke-width', strokeWidth);
+        g.appendChild(rect);
+      }
+      return g;
+    }
+
+    function renderVectorShapes() {
+      vectorDrawLayerEl.innerHTML = '';
+      for (const shape of vectorShapes) {
+        const node = buildVectorShapeNode(shape);
+        node.addEventListener('click', (e) => {
+          if (activeTool === 'eraser') {
+            e.stopPropagation();
+            pushUndoState();
+            vectorShapes = vectorShapes.filter((s) => s.id !== shape.id);
+            if (selectedShapeId === shape.id) selectedShapeId = null;
+            renderVectorShapes();
+            return;
+          }
+          if (activeTool === 'none') {
+            e.stopPropagation();
+            selectedShapeId = selectedShapeId === shape.id ? null : shape.id;
+            selectedTextId = null;
+            selectedStickerId = null;
+            renderVectorShapes();
+            renderOverlays();
+          }
+        });
+        vectorDrawLayerEl.appendChild(node);
+      }
+      if (draftVectorShape) {
+        vectorDrawLayerEl.appendChild(buildVectorShapeNode(draftVectorShape));
+      }
+    }
+
+    window.__APP_STATE__.renderVectorShapes = renderVectorShapes;
+
+    window.addEventListener('keydown', (e) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedShapeId !== null) {
+        const tag = document.activeElement?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        pushUndoState();
+        vectorShapes = vectorShapes.filter((s) => s.id !== selectedShapeId);
+        selectedShapeId = null;
+        renderVectorShapes();
+      }
+    });
+
+    function renderOverlays() {
+      overlayLayerEl.innerHTML = '';
+      const zoomRatio = getZoomRatio();
+
+      for (const sItem of stickerItems) {
+        const def = STICKER_DEFS.find((d) => d.key === sItem.key);
+        if (!def) continue;
+
+        const posPx = relToPx(sItem.nx, sItem.ny);
+        const wrap = document.createElement('div');
+        wrap.className = 'vector-sticker-item' + (sItem.id === selectedStickerId ? ' selected' : '');
+        wrap.style.left = `${posPx.x}px`;
+        wrap.style.top = `${posPx.y}px`;
+        wrap.appendChild(createStickerSvgElement(def, sItem.stickerScale || 1, zoomRatio));
+
+        const delBadge = document.createElement('span');
+        delBadge.className = 'sticker-del-badge';
+        delBadge.textContent = '刪除';
+        delBadge.addEventListener('pointerdown', (e) => e.stopPropagation());
+        delBadge.addEventListener('click', (e) => {
+          e.stopPropagation();
+          pushUndoState();
+          stickerItems = stickerItems.filter((s) => s.id !== sItem.id);
+          if (selectedStickerId === sItem.id) selectedStickerId = null;
+          renderOverlays();
+        });
+        wrap.appendChild(delBadge);
+
+        wrap.addEventListener('pointerdown', (e) => {
+          if (activeTool === 'hand') return;
+          e.stopPropagation();
+          selectedStickerId = sItem.id;
+          selectedTextId = null;
+          selectedShapeId = null;
+          if (stickerScaleInput) stickerScaleInput.value = sItem.stickerScale || 1;
+          if (stickerScaleLabel) stickerScaleLabel.textContent = `${Number(sItem.stickerScale || 1).toFixed(1)}x`;
+          renderOverlays();
+          renderVectorShapes();
+
+          const currentWrap = overlayLayerEl.querySelector('.vector-sticker-item.selected');
+          if (!currentWrap) return;
+
+          pushUndoState();
+          draggingStickerId = sItem.id;
+          const stackRect = overlayLayerEl.getBoundingClientRect();
+          const currentPx = relToPx(sItem.nx, sItem.ny);
+          stickerDragOffsetX = e.clientX - stackRect.left - currentPx.x;
+          stickerDragOffsetY = e.clientY - stackRect.top - currentPx.y;
+          currentWrap.setPointerCapture(e.pointerId);
+        });
+
+        wrap.addEventListener('pointermove', (e) => {
+          if (draggingStickerId !== sItem.id) return;
+          const stackRect = overlayLayerEl.getBoundingClientRect();
+          const nextPxX = Math.max(0, e.clientX - stackRect.left - stickerDragOffsetX);
+          const nextPxY = Math.max(0, e.clientY - stackRect.top - stickerDragOffsetY);
+          const nextRel = pxToRel(nextPxX, nextPxY);
+          sItem.nx = nextRel.nx;
+          sItem.ny = nextRel.ny;
+          wrap.style.left = `${nextPxX}px`;
+          wrap.style.top = `${nextPxY}px`;
+        });
+
+        const stopStickerDrag = (e) => {
+          if (draggingStickerId === sItem.id) {
+            draggingStickerId = null;
+            if (e && wrap.hasPointerCapture(e.pointerId)) wrap.releasePointerCapture(e.pointerId);
+          }
+        };
+        wrap.addEventListener('pointerup', stopStickerDrag);
+        wrap.addEventListener('pointercancel', stopStickerDrag);
+        overlayLayerEl.appendChild(wrap);
+      }
+
+      for (const item of textItems) {
+        const posPx = relToPx(item.nx, item.ny);
+        const scaledFontSize = Math.max(6, Math.round(item.fontSize * zoomRatio));
+
+        const box = document.createElement('div');
+        box.className = 'floating-text-box' + (item.id === selectedTextId ? ' selected' : '');
+        box.style.left = `${posPx.x}px`;
+        box.style.top = `${posPx.y}px`;
+        box.style.color = item.color;
+        box.style.fontSize = `${scaledFontSize}px`;
+        box.style.fontFamily = FONT_FAMILY;
+
+        const actions = document.createElement('div');
+        actions.className = 'floating-text-actions';
+
+        const editSpan = document.createElement('span');
+        editSpan.textContent = '編輯';
+        editSpan.addEventListener('pointerdown', (e) => e.stopPropagation());
+        editSpan.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const updated = prompt('修改文字內容：', item.text);
+          if (updated && updated.trim()) {
+            pushUndoState();
+            item.text = updated.trim();
+            renderOverlays();
+          }
+        });
+
+        const delSpan = document.createElement('span');
+        delSpan.className = 'del-btn';
+        delSpan.textContent = '刪除';
+        delSpan.addEventListener('pointerdown', (e) => e.stopPropagation());
+        delSpan.addEventListener('click', (e) => {
+          e.stopPropagation();
+          pushUndoState();
+          textItems = textItems.filter((t) => t.id !== item.id);
+          if (selectedTextId === item.id) selectedTextId = null;
+          renderOverlays();
+        });
+
+        const contentSpan = document.createElement('span');
+        contentSpan.textContent = item.text;
+
+        box.appendChild(contentSpan);
+        box.appendChild(actions);
+        actions.appendChild(editSpan);
+        actions.appendChild(delSpan);
+
+        box.addEventListener('pointerdown', (e) => {
+          if (activeTool === 'hand') return;
+          e.stopPropagation();
+          selectedTextId = item.id;
+          selectedStickerId = null;
+          selectedShapeId = null;
+          if (fontSizeInput) fontSizeInput.value = item.fontSize;
+          renderOverlays();
+          renderVectorShapes();
+
+          const targetBox = overlayLayerEl.querySelector('.floating-text-box.selected');
+          if (!targetBox) return;
+
+          pushUndoState();
+          draggingTextId = item.id;
+          const stackRect = overlayLayerEl.getBoundingClientRect();
+          const currentPx = relToPx(item.nx, item.ny);
+          textDragOffsetX = e.clientX - stackRect.left - currentPx.x;
+          textDragOffsetY = e.clientY - stackRect.top - currentPx.y;
+          targetBox.setPointerCapture(e.pointerId);
+        });
+
+        box.addEventListener('pointermove', (e) => {
+          if (draggingTextId !== item.id) return;
+          const stackRect = overlayLayerEl.getBoundingClientRect();
+          const nextPxX = Math.max(0, e.clientX - stackRect.left - textDragOffsetX);
+          const nextPxY = Math.max(0, e.clientY - stackRect.top - textDragOffsetY);
+          const nextRel = pxToRel(nextPxX, nextPxY);
+          item.nx = nextRel.nx;
+          item.ny = nextRel.ny;
+          box.style.left = `${nextPxX}px`;
+          box.style.top = `${nextPxY}px`;
+        });
+
+        const stopTextDrag = (e) => {
+          if (draggingTextId === item.id) {
+            draggingTextId = null;
+            if (e && box.hasPointerCapture(e.pointerId)) box.releasePointerCapture(e.pointerId);
+          }
+        };
+        box.addEventListener('pointerup', stopTextDrag);
+        box.addEventListener('pointercancel', stopTextDrag);
+        overlayLayerEl.appendChild(box);
+      }
+    }
+
+    window.__APP_STATE__.renderOverlays = renderOverlays;
+
+    overlayLayerEl.addEventListener('pointerdown', (e) => {
+      if (activeTool === 'text' && e.target === overlayLayerEl) {
+        e.stopPropagation();
+        const rect = overlayLayerEl.getBoundingClientRect();
+        const rel = pxToRel(e.clientX - rect.left, e.clientY - rect.top);
+        const content = prompt('請輸入要加入的文字：', '');
+        if (content && content.trim()) {
+          pushUndoState();
+          const newText = {
+            id: `txt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            text: content.trim(),
+            nx: rel.nx,
+            ny: rel.ny,
+            fontSize: clampFontSize(fontSizeInput?.value || 20),
+            color: colorInput?.value || '#ff0000',
+          };
+          textItems.push(newText);
+          selectedTextId = newText.id;
+          selectedStickerId = null;
+          selectedShapeId = null;
+          renderOverlays();
+          renderVectorShapes();
+          setTool('none');
+        }
+        return;
+      }
+
+      if (e.target === overlayLayerEl) {
+        selectedTextId = null;
+        selectedStickerId = null;
+        selectedShapeId = null;
+        renderOverlays();
+        renderVectorShapes();
+      }
+    });
+
+    function renderSvgMarkupToContext(svgEl, width, height, targetCtx, x, y) {
+      const xml = new XMLSerializer().serializeToString(svgEl);
+      const blob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          targetCtx.drawImage(img, x, y, width, height);
+          URL.revokeObjectURL(url);
+          resolve();
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          resolve();
+        };
+        img.src = url;
+      });
+    }
+
+    downloadPngBtn?.addEventListener('click', async () => {
+      if (canvas.width === 0 || canvas.height === 0) return;
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = canvas.width;
+      exportCanvas.height = canvas.height;
+      const exportCtx = exportCanvas.getContext('2d');
+      const zoomRatio = getZoomRatio();
+
+      exportCtx.drawImage(canvas, 0, 0);
+      exportCtx.drawImage(drawCanvas, 0, 0);
+
+      if (vectorShapes.length > 0) {
+        const tempSvg = document.createElementNS(SVG_NS, 'svg');
+        tempSvg.setAttribute('xmlns', SVG_NS);
+        tempSvg.setAttribute('width', canvas.width);
+        tempSvg.setAttribute('height', canvas.height);
+        tempSvg.setAttribute('viewBox', `0 0 ${canvas.width} ${canvas.height}`);
+        for (const shape of vectorShapes) {
+          tempSvg.appendChild(buildVectorShapeNode(shape, zoomRatio));
+        }
+        await renderSvgMarkupToContext(tempSvg, canvas.width, canvas.height, exportCtx, 0, 0);
+      }
+
+      for (const sItem of stickerItems) {
+        const def = STICKER_DEFS.find((d) => d.key === sItem.key);
+        if (def) {
+          const posPx = relToPx(sItem.nx, sItem.ny);
+          const svgEl = createStickerSvgElement(def, sItem.stickerScale || 1, zoomRatio);
+          await renderSvgMarkupToContext(
+            svgEl,
+            Number(svgEl.getAttribute('width')),
+            Number(svgEl.getAttribute('height')),
+            exportCtx,
+            posPx.x,
+            posPx.y
+          );
+        }
+      }
+
+      for (const item of textItems) {
+        const posPx = relToPx(item.nx, item.ny);
+        const scaledFontSize = Math.max(6, Math.round(item.fontSize * zoomRatio));
+        exportCtx.save();
+        exportCtx.font = `bold ${scaledFontSize}px ${FONT_FAMILY}`;
+        exportCtx.fillStyle = item.color;
+        exportCtx.textBaseline = 'top';
+        exportCtx.fillText(item.text, posPx.x + 8 * zoomRatio, posPx.y + 4 * zoomRatio);
+        exportCtx.restore();
+      }
+
+      const link = document.createElement('a');
+      const now = new Date();
+      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+      link.download = `chart_annotated_${Math.round(getCurrentScale() * 100)}pct_${stamp}.png`;
+      link.href = exportCanvas.toDataURL('image/png');
+      link.click();
+    });
+
+    const toolButtons = {
+      none: document.getElementById('tool-none'),
+      hand: document.getElementById('tool-hand'),
+      pen: document.getElementById('tool-pen'),
+      line: document.getElementById('tool-line'),
+      arrow: document.getElementById('tool-arrow'),
+      circle: document.getElementById('tool-circle'),
+      rect: document.getElementById('tool-rect'),
+      text: document.getElementById('tool-text'),
+      eraser: document.getElementById('tool-eraser'),
+    };
+    const handTopBtn = document.getElementById('tool-hand-top');
+    const VECTOR_SHAPE_TOOLS = ['pen', 'line', 'arrow', 'circle', 'rect'];
+
+    function setTool(toolName) {
+      activeTool = toolName;
+      Object.entries(toolButtons).forEach(([key, btn]) => {
+        if (btn) btn.classList.toggle('active', key === toolName);
+      });
+      if (handTopBtn) handTopBtn.classList.toggle('active', toolName === 'hand');
+
+      const isVectorShapeTool = VECTOR_SHAPE_TOOLS.includes(toolName);
+      vectorDrawLayerEl.classList.toggle('drawing-active', isVectorShapeTool);
+      overlayLayerEl.classList.toggle('text-placing', toolName === 'text');
+      drawCanvas.style.pointerEvents = toolName === 'eraser' ? 'auto' : 'none';
+      viewerContainerEl?.classList.toggle('hand-mode', toolName === 'hand');
+
+      if (toolName === 'eraser') {
+        drawCanvas.style.cursor = 'none';
+        updateEraserCursorSize();
+      } else {
+        eraserCursorEl.style.display = 'none';
+        vectorDrawLayerEl.style.cursor = isVectorShapeTool ? 'crosshair' : 'default';
+      }
+    }
+
+    Object.entries(toolButtons).forEach(([key, btn]) => {
+      if (btn) btn.addEventListener('click', () => setTool(key));
+    });
+    handTopBtn?.addEventListener('click', () => {
+      setTool(activeTool === 'hand' ? 'none' : 'hand');
+    });
+
+    let isHandPanning = false;
+    let handStartX = 0;
+    let handStartY = 0;
+    let handStartScrollLeft = 0;
+    let handStartScrollTop = 0;
+
+    viewerContainerEl?.addEventListener('pointerdown', (e) => {
+      if (activeTool !== 'hand') return;
+      isHandPanning = true;
+      handStartX = e.clientX;
+      handStartY = e.clientY;
+      handStartScrollLeft = viewerContainerEl.scrollLeft;
+      handStartScrollTop = viewerContainerEl.scrollTop;
+      viewerContainerEl.classList.add('hand-grabbing');
+      viewerContainerEl.setPointerCapture(e.pointerId);
+    });
+
+    viewerContainerEl?.addEventListener('pointermove', (e) => {
+      if (!isHandPanning || activeTool !== 'hand') return;
+      viewerContainerEl.scrollLeft = handStartScrollLeft - (e.clientX - handStartX);
+      viewerContainerEl.scrollTop = handStartScrollTop - (e.clientY - handStartY);
+    });
+
+    const stopHandPan = (e) => {
+      if (!isHandPanning) return;
+      isHandPanning = false;
+      viewerContainerEl?.classList.remove('hand-grabbing');
+      if (e && viewerContainerEl?.hasPointerCapture(e.pointerId)) {
+        viewerContainerEl.releasePointerCapture(e.pointerId);
+      }
+    };
+    viewerContainerEl?.addEventListener('pointerup', stopHandPan);
+    viewerContainerEl?.addEventListener('pointercancel', stopHandPan);
+
+    function getStackCoords(e, targetEl) {
+      const rect = targetEl.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    vectorDrawLayerEl.addEventListener('pointerdown', (e) => {
+      if (!VECTOR_SHAPE_TOOLS.includes(activeTool)) return;
+      const { x, y } = getStackCoords(e, vectorDrawLayerEl);
+      const rel = pxToRel(x, y);
+      pushUndoState();
+      isDrawing = true;
+      hasStrokeMoved = false;
+      selectedShapeId = null;
+      vectorDrawLayerEl.setPointerCapture(e.pointerId);
+
+      const lineWidth = Number(lineWidthSelect?.value || 5);
+      const color = colorInput?.value || '#ff0000';
+
+      if (activeTool === 'pen') {
+        penRelPoints = [{ nx: rel.nx, ny: rel.ny }];
+        draftVectorShape = { id: 'draft', type: 'pen', points: penRelPoints, lineWidth, color };
+      } else {
+        draftVectorShape = {
+          id: 'draft',
+          type: activeTool,
+          nx1: rel.nx,
+          ny1: rel.ny,
+          nx2: rel.nx,
+          ny2: rel.ny,
+          lineWidth,
+          color,
+        };
+      }
+      renderVectorShapes();
+    });
+
+    vectorDrawLayerEl.addEventListener('pointermove', (e) => {
+      if (!isDrawing || !draftVectorShape || !VECTOR_SHAPE_TOOLS.includes(activeTool)) return;
+      const { x, y } = getStackCoords(e, vectorDrawLayerEl);
+      const rel = pxToRel(x, y);
+      hasStrokeMoved = true;
+      if (activeTool === 'pen') {
+        penRelPoints.push({ nx: rel.nx, ny: rel.ny });
+        draftVectorShape.points = penRelPoints;
+      } else {
+        draftVectorShape.nx2 = rel.nx;
+        draftVectorShape.ny2 = rel.ny;
+      }
+      renderVectorShapes();
+    });
+
+    function finishVectorDrawing(e) {
+      if (!isDrawing) return;
+      isDrawing = false;
+      if (hasStrokeMoved && draftVectorShape) {
+        const finalized = cloneVectorShape(draftVectorShape);
+        finalized.id = `vec_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        vectorShapes.push(finalized);
+      } else if (undoStack.length > 0) {
+        undoStack.pop();
+        updateUndoButton();
+      }
+      draftVectorShape = null;
+      penRelPoints = [];
+      hasStrokeMoved = false;
+      renderVectorShapes();
+      if (e && vectorDrawLayerEl.hasPointerCapture(e.pointerId)) {
+        vectorDrawLayerEl.releasePointerCapture(e.pointerId);
+      }
+    }
+    vectorDrawLayerEl.addEventListener('pointerup', finishVectorDrawing);
+    vectorDrawLayerEl.addEventListener('pointercancel', finishVectorDrawing);
+
+    let isErasing = false;
+    let eraseDidModify = false;
+
+    drawCanvas.addEventListener('pointerdown', (e) => {
+      if (activeTool !== 'eraser') return;
+      const { x, y } = getStackCoords(e, drawCanvas);
+      updateEraserCursorPosition(x, y);
+      pushUndoState();
+      isErasing = true;
+      eraseDidModify = false;
+      drawCanvas.setPointerCapture(e.pointerId);
+      if (eraseVectorShapesAt(x, y)) eraseDidModify = true;
+      drawCtx.beginPath();
+      drawCtx.moveTo(x, y);
+    });
+
+    drawCanvas.addEventListener('pointermove', (e) => {
+      const { x, y } = getStackCoords(e, drawCanvas);
+      updateEraserCursorPosition(x, y);
+      if (!isErasing || activeTool !== 'eraser') return;
+      if (eraseVectorShapesAt(x, y)) eraseDidModify = true;
+      drawCtx.save();
+      drawCtx.globalCompositeOperation = 'destination-out';
+      drawCtx.lineWidth = Number(eraserSizeInput?.value || 20);
+      drawCtx.lineCap = 'round';
+      drawCtx.lineJoin = 'round';
+      drawCtx.lineTo(x, y);
+      drawCtx.stroke();
+      drawCtx.restore();
+      eraseDidModify = true;
+    });
+
+    drawCanvas.addEventListener('pointerleave', () => {
+      eraserCursorEl.style.display = 'none';
+    });
+
+    function finishErasing(e) {
+      if (!isErasing) return;
+      isErasing = false;
+      if (!eraseDidModify && undoStack.length > 0) {
+        undoStack.pop();
+        updateUndoButton();
+      }
+      eraseDidModify = false;
+      if (e && drawCanvas.hasPointerCapture(e.pointerId)) {
+        drawCanvas.releasePointerCapture(e.pointerId);
+      }
+    }
+    drawCanvas.addEventListener('pointerup', finishErasing);
+    drawCanvas.addEventListener('pointercancel', finishErasing);
+
+    toggleSidebarBtn?.addEventListener('click', () => {
+      const isCollapsed = sidebarEl?.classList.toggle('collapsed');
+      toggleSidebarBtn.textContent = isCollapsed ? '展開圖層' : '收合圖層';
+    });
+
+    initStickerButtons();
+    initColorPalette();
+    setTool('none');
+  </script>
+
+  <!-- 模組腳本：獨立載入 PDF 與圖層 -->
+  <script type="module">
+    const PDF_URL = './chart.pdf';
+    const HIDDEN_NUMBERS = [90, 16, 54];
+    const layersListEl = document.getElementById('layers-list');
+    const zoomLabelEl = document.getElementById('zoom-label');
+    const canvas = document.getElementById('pdf-canvas');
+    const ctx = canvas.getContext('2d');
+    const drawCanvas = document.getElementById('draw-canvas');
+    const drawCtx = drawCanvas.getContext('2d');
+    const vectorDrawLayerEl = document.getElementById('vector-draw-layer');
+    const overlayLayerEl = document.getElementById('overlay-layer');
+
+    let pdfDoc = null;
+    let optionalContentConfig = null;
+    let renderTask = null;
+    let visibleGroupIds = [];
+
+    function extractLeadingNumber(name) {
+      const normalized = String(name || '')
+        .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+        .trim();
+      const match = normalized.match(/^(\d+)/);
+      return match ? parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
+    }
+
+    function isHiddenLayer(name) {
+      return HIDDEN_NUMBERS.includes(extractLeadingNumber(name));
+    }
+
+    async function renderLayersUI() {
+      if (!layersListEl) return;
+      layersListEl.innerHTML = '';
+      visibleGroupIds = [];
+
+      if (!optionalContentConfig) {
+        layersListEl.textContent = '此 PDF 未包含圖層資訊';
+        return;
+      }
+
+      const groups = optionalContentConfig.getGroups();
+      if (!groups || Object.keys(groups).length === 0) {
+        layersListEl.textContent = '找不到可用圖層';
+        return;
+      }
+
+      for (const [groupId, group] of Object.entries(groups)) {
+        if (isHiddenLayer(group.name || groupId)) {
+          optionalContentConfig.setVisibility(groupId, false);
+        }
+      }
+
+      const entries = Object.entries(groups)
+        .filter(([groupId, group]) => !isHiddenLayer(group.name || groupId))
+        .sort((a, b) => {
+          const nameA = a[1].name || a[0];
+          const nameB = b[1].name || b[0];
+          const numA = extractLeadingNumber(nameA);
+          const numB = extractLeadingNumber(nameB);
+          if (numA !== numB) return numA - numB;
+          return String(nameA).localeCompare(String(nameB), 'zh-Hant');
+        });
+
+      for (const [groupId, group] of entries) {
+        visibleGroupIds.push(groupId);
+        const label = document.createElement('label');
+        label.className = 'layer-item';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.dataset.groupId = groupId;
+        checkbox.checked = optionalContentConfig.isVisible(groupId);
+
+        checkbox.addEventListener('change', async () => {
+          optionalContentConfig.setVisibility(groupId, checkbox.checked);
+          await renderPage();
+        });
+
+        const text = document.createElement('span');
+        text.textContent = group.name || groupId;
+
+        label.appendChild(checkbox);
+        label.appendChild(text);
+        layersListEl.appendChild(label);
+      }
+    }
+
+    async function setAllLayersVisibility(checked) {
+      if (!optionalContentConfig || visibleGroupIds.length === 0) return;
+      for (const groupId of visibleGroupIds) {
+        optionalContentConfig.setVisibility(groupId, checked);
+      }
+      layersListEl?.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+        cb.checked = checked;
+      });
+      await renderPage();
+    }
+
+    async function renderPage() {
+      const scale = window.__APP_STATE__.scale;
+      if (zoomLabelEl) zoomLabelEl.textContent = `${Math.round(scale * 100)}%`;
+      if (!pdfDoc) return;
+      if (renderTask) renderTask.cancel();
+
+      const page = await pdfDoc.getPage(1);
+      const viewport = page.getViewport({ scale });
+
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+
+      const prevDrawing = document.createElement('canvas');
+      prevDrawing.width = drawCanvas.width;
+      prevDrawing.height = drawCanvas.height;
+      prevDrawing.getContext('2d').drawImage(drawCanvas, 0, 0);
+
+      drawCanvas.height = viewport.height;
+      drawCanvas.width = viewport.width;
+      drawCtx.drawImage(prevDrawing, 0, 0, drawCanvas.width, drawCanvas.height);
+
+      vectorDrawLayerEl.setAttribute('width', viewport.width);
+      vectorDrawLayerEl.setAttribute('height', viewport.height);
+      vectorDrawLayerEl.setAttribute('viewBox', `0 0 ${viewport.width} ${viewport.height}`);
+      vectorDrawLayerEl.style.width = `${viewport.width}px`;
+      vectorDrawLayerEl.style.height = `${viewport.height}px`;
+      window.__APP_STATE__.renderVectorShapes?.();
+
+      overlayLayerEl.style.width = `${viewport.width}px`;
+      overlayLayerEl.style.height = `${viewport.height}px`;
+      window.__APP_STATE__.renderOverlays?.();
+
+      renderTask = page.render({
+        canvasContext: ctx,
+        viewport,
+        optionalContentConfigPromise: Promise.resolve(optionalContentConfig),
+      });
+
+      try {
+        await renderTask.promise;
+      } catch (err) {
+        if (err?.name !== 'RenderingCancelledException') console.error(err);
+      }
+    }
+
+    document.getElementById('zoom-in')?.addEventListener('click', async () => {
+      window.__APP_STATE__.scale = Math.min(6.0, +(window.__APP_STATE__.scale + 0.5).toFixed(2));
+      await renderPage();
+    });
+    document.getElementById('zoom-out')?.addEventListener('click', async () => {
+      window.__APP_STATE__.scale = Math.max(0.25, +(window.__APP_STATE__.scale - 0.5).toFixed(2));
+      await renderPage();
+    });
+    document.getElementById('zoom-150')?.addEventListener('click', async () => {
+      window.__APP_STATE__.scale = 1.5;
+      await renderPage();
+    });
+    document.getElementById('zoom-reset')?.addEventListener('click', async () => {
+      window.__APP_STATE__.scale = 1.0;
+      await renderPage();
+    });
+    document.getElementById('layers-check-all')?.addEventListener('click', async () => {
+      await setAllLayersVisibility(true);
+    });
+    document.getElementById('layers-uncheck-all')?.addEventListener('click', async () => {
+      await setAllLayersVisibility(false);
+    });
+
+    async function loadPdfJs() {
+      const cdns = [
+        'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.mjs',
+        'https://unpkg.com/pdfjs-dist@4.6.82/build/pdf.min.mjs',
+      ];
+      for (const url of cdns) {
+        try {
+          const mod = await import(url);
+          mod.GlobalWorkerOptions.workerSrc = url.replace('/pdf.min.mjs', '/pdf.worker.min.mjs');
+          return mod;
+        } catch (_) {}
+      }
+      throw new Error('無法載入 PDF.js 函式庫，請檢查網路連線。');
+    }
+
+    async function initPdf() {
+      try {
+        const pdfjsLib = await loadPdfJs();
+        const loadingTask = pdfjsLib.getDocument(PDF_URL);
+        pdfDoc = await loadingTask.promise;
+
+        try {
+          optionalContentConfig = await pdfDoc.getOptionalContentConfig();
+        } catch (_) {
+          optionalContentConfig = null;
+        }
+
+        await renderLayersUI();
+        await renderPage();
+      } catch (err) {
+        if (layersListEl) {
+          layersListEl.textContent = `載入失敗：${err?.message || '請確認 chart.pdf 是否在同一層'}`;
+        }
+        console.error(err);
+      }
+    }
+
+    initPdf();
+  </script>
+</body>
+</html>

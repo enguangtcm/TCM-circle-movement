@@ -450,7 +450,6 @@
 
       <span class="toolbar-divider"></span>
 
-      <!-- Office 風格調色盤 -->
       <div class="palette-wrapper" id="palette-wrapper">
         <button type="button" class="palette-trigger" id="palette-trigger" title="開啟調色盤">
           <span>顏色</span>
@@ -531,9 +530,16 @@
   </script>
 
   <script type="module">
-    import * as pdfjsLib from 'https://unpkg.com/pdfjs-dist@4.6.82/build/pdf.min.mjs';
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://unpkg.com/pdfjs-dist@4.6.82/build/pdf.worker.min.mjs';
+    let pdfjsLib;
+    try {
+      pdfjsLib = await import('https://unpkg.com/pdfjs-dist@4.6.82/build/pdf.min.mjs');
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://unpkg.com/pdfjs-dist@4.6.82/build/pdf.worker.min.mjs';
+    } catch (_) {
+      pdfjsLib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.mjs');
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.worker.min.mjs';
+    }
 
     const PDF_URL = './chart.pdf';
     const HIDDEN_NUMBERS = [90, 16, 54];
@@ -541,7 +547,6 @@
     const SVG_NS = 'http://www.w3.org/2000/svg';
     const BASE_SCALE = 1.5;
 
-    // 調色盤色票定義（對應附圖佈景主題色彩與標準色彩）
     const THEME_BASE_COLORS = [
       '#ffffff', '#000000', '#eeece1', '#1f497d', '#4f81bd',
       '#c0504d', '#9bbb59', '#8064a2', '#4bacc6', '#f79646'
@@ -573,4 +578,315 @@
       { key: 'cold', label: '寒', shape: 'circle', fill: '#000000', textColor: '#ffffff' },
       { key: 'summer', label: '暑', shape: 'circle', fill: '#ff00ff', textColor: '#ffffff' },
       { key: 'damp', label: '濕', shape: 'circle', fill: '#ff8000', textColor: '#ffffff' },
-      { key: 'dry', label: '燥', shape: 'circle', fill: '#a6a6a6', textColor:
+      { key: 'dry', label: '燥', shape: 'circle', fill: '#a6a6a6', textColor: '#ffffff' },
+      { key: 'fire_xie', label: '火', shape: 'circle', fill: '#ff0000', textColor: '#ffffff' },
+      { key: 'bacteria', label: '細菌', shape: 'oval', fill: 'none', stroke: '#000000', textColor: '#000000' },
+      { key: 'virus', label: '病毒', shape: 'oval', fill: 'none', stroke: '#000000', textColor: '#000000' },
+    ];
+
+    let pdfDoc = null;
+    let scale = BASE_SCALE;
+    let optionalContentConfig = null;
+    let renderTask = null;
+    let visibleGroupIds = [];
+
+    let activeTool = 'none';
+    let isDrawing = false;
+    let penRelPoints = [];
+    let draftVectorShape = null;
+    let hasStrokeMoved = false;
+    const undoStack = [];
+    const MAX_UNDO = 30;
+
+    let vectorShapes = [];
+    let selectedShapeId = null;
+
+    let textItems = [];
+    let selectedTextId = null;
+    let draggingTextId = null;
+    let textDragOffsetX = 0;
+    let textDragOffsetY = 0;
+
+    let stickerItems = [];
+    let selectedStickerId = null;
+    let draggingStickerId = null;
+    let stickerDragOffsetX = 0;
+    let stickerDragOffsetY = 0;
+
+    const sidebarEl = document.getElementById('sidebar');
+    const toggleSidebarBtn = document.getElementById('toggle-sidebar');
+    const canvas = document.getElementById('pdf-canvas');
+    const ctx = canvas.getContext('2d');
+    const drawCanvas = document.getElementById('draw-canvas');
+    const drawCtx = drawCanvas.getContext('2d');
+    const vectorDrawLayerEl = document.getElementById('vector-draw-layer');
+    const eraserCursorEl = document.getElementById('eraser-cursor');
+    const overlayLayerEl = document.getElementById('overlay-layer');
+    const stickerButtonsEl = document.getElementById('sticker-buttons');
+    const stickerScaleInput = document.getElementById('sticker-scale');
+    const stickerScaleLabel = document.getElementById('sticker-scale-label');
+    const layersListEl = document.getElementById('layers-list');
+    const zoomLabelEl = document.getElementById('zoom-label');
+    const viewerContainerEl = document.getElementById('viewer-container');
+    const colorInput = document.getElementById('draw-color');
+    const paletteTrigger = document.getElementById('palette-trigger');
+    const palettePreview = document.getElementById('palette-preview');
+    const palettePopover = document.getElementById('palette-popover');
+    const lineWidthSelect = document.getElementById('line-width');
+    const fontSizeInput = document.getElementById('font-size');
+    const eraserSizeInput = document.getElementById('eraser-size');
+    const eraserSizeLabel = document.getElementById('eraser-size-label');
+    const undoBtn = document.getElementById('draw-undo');
+    const clearBtn = document.getElementById('draw-clear');
+    const downloadPngBtn = document.getElementById('download-png');
+
+    function setSelectedColor(hex) {
+      colorInput.value = hex;
+      if (palettePreview) palettePreview.style.background = hex;
+      document.querySelectorAll('.palette-cell').forEach((cell) => {
+        cell.classList.toggle('active-color', cell.dataset.color?.toLowerCase() === hex.toLowerCase());
+      });
+      if (selectedTextId !== null) {
+        const target = textItems.find((t) => t.id === selectedTextId);
+        if (target && target.color !== hex) {
+          pushUndoState();
+          target.color = hex;
+          renderOverlays();
+        }
+      }
+      if (selectedShapeId !== null) {
+        const targetShape = vectorShapes.find((s) => s.id === selectedShapeId);
+        if (targetShape && targetShape.color !== hex) {
+          pushUndoState();
+          targetShape.color = hex;
+          renderVectorShapes();
+        }
+      }
+    }
+
+    function initColorPalette() {
+      const themeTopEl = document.getElementById('palette-theme-top');
+      const themeShadesEl = document.getElementById('palette-theme-shades');
+      const standardEl = document.getElementById('palette-standard');
+      if (!themeTopEl || !themeShadesEl || !standardEl) return;
+
+      themeTopEl.innerHTML = '';
+      themeShadesEl.innerHTML = '';
+      standardEl.innerHTML = '';
+
+      const createSwatch = (hex) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'palette-cell';
+        btn.style.background = hex;
+        btn.dataset.color = hex;
+        btn.title = hex;
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          setSelectedColor(hex);
+          palettePopover?.classList.remove('open');
+        });
+        return btn;
+      };
+
+      THEME_BASE_COLORS.forEach((hex) => themeTopEl.appendChild(createSwatch(hex)));
+      THEME_SHADE_COLUMNS.forEach((colColors) => {
+        const colDiv = document.createElement('div');
+        colDiv.className = 'palette-shade-col';
+        colColors.forEach((hex) => colDiv.appendChild(createSwatch(hex)));
+        themeShadesEl.appendChild(colDiv);
+      });
+      STANDARD_COLORS.forEach((hex) => standardEl.appendChild(createSwatch(hex)));
+
+      paletteTrigger?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        palettePopover?.classList.toggle('open');
+      });
+
+      document.getElementById('palette-auto-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setSelectedColor('#ff0000');
+        palettePopover?.classList.remove('open');
+      });
+
+      document.getElementById('palette-more-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        palettePopover?.classList.remove('open');
+        colorInput?.click();
+      });
+
+      colorInput?.addEventListener('input', () => {
+        setSelectedColor(colorInput.value);
+      });
+
+      document.addEventListener('click', (e) => {
+        const wrap = document.getElementById('palette-wrapper');
+        if (wrap && !wrap.contains(e.target)) {
+          palettePopover?.classList.remove('open');
+        }
+      });
+
+      setSelectedColor('#ff0000');
+    }
+
+    function getZoomRatio() {
+      return scale / BASE_SCALE;
+    }
+
+    function getLayerDimensions() {
+      const w = canvas.width || 1;
+      const h = canvas.height || 1;
+      return { w, h };
+    }
+
+    function pxToRel(x, y) {
+      const { w, h } = getLayerDimensions();
+      return {
+        nx: Math.max(0, Math.min(1, x / w)),
+        ny: Math.max(0, Math.min(1, y / h)),
+      };
+    }
+
+    function relToPx(nx, ny) {
+      const { w, h } = getLayerDimensions();
+      return {
+        x: nx * w,
+        y: ny * h,
+      };
+    }
+
+    function createStickerSvgElement(def, itemScale = 1, zoomRatio = getZoomRatio()) {
+      const svg = document.createElementNS(SVG_NS, 'svg');
+      const effectiveScale = itemScale * zoomRatio;
+
+      if (def.shape === 'ring') {
+        const baseSize = 72;
+        const size = Math.max(12, Math.round(baseSize * effectiveScale));
+        svg.setAttribute('viewBox', '0 0 100 100');
+        svg.setAttribute('width', size);
+        svg.setAttribute('height', size);
+
+        const circle = document.createElementNS(SVG_NS, 'circle');
+        circle.setAttribute('cx', '50');
+        circle.setAttribute('cy', '50');
+        circle.setAttribute('r', '44');
+        circle.setAttribute('fill', def.fill || 'none');
+        circle.setAttribute('stroke', def.stroke || '#000000');
+        circle.setAttribute('stroke-width', '6.5');
+        svg.appendChild(circle);
+
+        const text = document.createElementNS(SVG_NS, 'text');
+        text.setAttribute('x', '50');
+        text.setAttribute('y', '53');
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('dominant-baseline', 'central');
+        text.setAttribute('fill', def.textColor);
+        text.setAttribute('font-size', '52');
+        text.setAttribute('font-weight', 'bold');
+        text.setAttribute('font-family', FONT_FAMILY);
+        text.textContent = def.label;
+        svg.appendChild(text);
+      } else if (def.shape === 'circle') {
+        const baseSize = 68;
+        const size = Math.max(12, Math.round(baseSize * effectiveScale));
+        svg.setAttribute('viewBox', '0 0 100 100');
+        svg.setAttribute('width', size);
+        svg.setAttribute('height', size);
+
+        const circle = document.createElementNS(SVG_NS, 'circle');
+        circle.setAttribute('cx', '50');
+        circle.setAttribute('cy', '50');
+        circle.setAttribute('r', '46');
+        circle.setAttribute('fill', def.fill);
+        svg.appendChild(circle);
+
+        const text = document.createElementNS(SVG_NS, 'text');
+        text.setAttribute('x', '50');
+        text.setAttribute('y', '53');
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('dominant-baseline', 'central');
+        text.setAttribute('fill', def.textColor);
+        text.setAttribute('font-size', '52');
+        text.setAttribute('font-weight', 'bold');
+        text.setAttribute('font-family', FONT_FAMILY);
+        text.textContent = def.label;
+        svg.appendChild(text);
+      } else {
+        const baseW = 112;
+        const baseH = 68;
+        const w = Math.max(18, Math.round(baseW * effectiveScale));
+        const h = Math.max(12, Math.round(baseH * effectiveScale));
+        svg.setAttribute('viewBox', '0 0 160 100');
+        svg.setAttribute('width', w);
+        svg.setAttribute('height', h);
+
+        const ellipse = document.createElementNS(SVG_NS, 'ellipse');
+        ellipse.setAttribute('cx', '80');
+        ellipse.setAttribute('cy', '50');
+        ellipse.setAttribute('rx', '73');
+        ellipse.setAttribute('ry', '42');
+        ellipse.setAttribute('fill', def.fill);
+        ellipse.setAttribute('stroke', def.stroke || '#000000');
+        ellipse.setAttribute('stroke-width', '7');
+        svg.appendChild(ellipse);
+
+        const text = document.createElementNS(SVG_NS, 'text');
+        text.setAttribute('x', '80');
+        text.setAttribute('y', '52');
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('dominant-baseline', 'central');
+        text.setAttribute('fill', def.textColor);
+        text.setAttribute('font-size', '44');
+        text.setAttribute('font-weight', 'bold');
+        text.setAttribute('font-family', FONT_FAMILY);
+        text.textContent = def.label;
+        svg.appendChild(text);
+      }
+
+      return svg;
+    }
+
+    function initStickerButtons() {
+      if (!stickerButtonsEl) return;
+      stickerButtonsEl.innerHTML = '';
+      for (const def of STICKER_DEFS) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'sticker-btn';
+        btn.title = `加入向量貼紙：${def.label}`;
+        btn.appendChild(createStickerSvgElement(def, 0.42, 1));
+        btn.addEventListener('click', () => {
+          pushUndoState();
+          const currentScale = Number(stickerScaleInput?.value) || 1;
+          const offsetIndex = stickerItems.length % 8;
+          const startPxX = (viewerContainerEl?.scrollLeft || 0) + 28 + offsetIndex * 18;
+          const startPxY = (viewerContainerEl?.scrollTop || 0) + 28 + offsetIndex * 18;
+          const rel = pxToRel(startPxX, startPxY);
+          const newSticker = {
+            id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            key: def.key,
+            nx: rel.nx,
+            ny: rel.ny,
+            stickerScale: currentScale,
+          };
+          stickerItems.push(newSticker);
+          selectedStickerId = newSticker.id;
+          selectedTextId = null;
+          selectedShapeId = null;
+          renderOverlays();
+          renderVectorShapes();
+        });
+        stickerButtonsEl.appendChild(btn);
+      }
+    }
+
+    stickerScaleInput?.addEventListener('input', () => {
+      const val = Number(stickerScaleInput.value) || 1;
+      if (stickerScaleLabel) stickerScaleLabel.textContent = `${val.toFixed(1)}x`;
+      if (selectedStickerId !== null) {
+        const target = stickerItems.find((s) => s.id === selectedStickerId);
+        if (target) {
+          target.stickerScale = val;
+          renderOverlays();
+        }
+      }

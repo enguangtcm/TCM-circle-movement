@@ -375,8 +375,8 @@
     const HIDDEN_NUMBERS = [90, 16, 54];
     const FONT_FAMILY = '"Microsoft JhengHei", "Noto Sans TC", sans-serif';
     const SVG_NS = 'http://www.w3.org/2000/svg';
+    const BASE_SCALE = 1.5;
 
-    // 向量貼紙規格（含五行木火土金水圓框字樣 + 風寒暑濕燥火/細菌/病毒）
     const STICKER_DEFS = [
       { key: 'wood', label: '木', shape: 'ring', fill: 'none', stroke: '#0000ff', textColor: '#0000ff' },
       { key: 'fire_wuxing', label: '火', shape: 'ring', fill: 'none', stroke: '#ff0000', textColor: '#ff0000' },
@@ -394,31 +394,31 @@
     ];
 
     let pdfDoc = null;
-    let scale = 1.5;
+    let scale = BASE_SCALE;
     let optionalContentConfig = null;
     let renderTask = null;
     let visibleGroupIds = [];
 
     let activeTool = 'none';
     let isDrawing = false;
-    let startX = 0;
-    let startY = 0;
-    let penPoints = [];
+    let penRelPoints = [];
     let draftVectorShape = null;
     let hasStrokeMoved = false;
     const undoStack = [];
     const MAX_UNDO = 30;
 
-    // 向量繪圖物件清單（隨意畫線、直線、箭頭、圓形、正方形）
+    // 向量繪圖物件（座標皆存相對比例 nx, ny in [0..1]）
     let vectorShapes = [];
     let selectedShapeId = null;
 
+    // 文字框（座標存相對比例 nx, ny）
     let textItems = [];
     let selectedTextId = null;
     let draggingTextId = null;
     let textDragOffsetX = 0;
     let textDragOffsetY = 0;
 
+    // 向量貼紙（座標存相對比例 nx, ny）
     let stickerItems = [];
     let selectedStickerId = null;
     let draggingStickerId = null;
@@ -449,12 +449,39 @@
     const clearBtn = document.getElementById('draw-clear');
     const downloadPngBtn = document.getElementById('download-png');
 
-    function createStickerSvgElement(def, itemScale = 1) {
+    function getZoomRatio() {
+      return scale / BASE_SCALE;
+    }
+
+    function getLayerDimensions() {
+      const w = canvas.width || 1;
+      const h = canvas.height || 1;
+      return { w, h };
+    }
+
+    function pxToRel(x, y) {
+      const { w, h } = getLayerDimensions();
+      return {
+        nx: Math.max(0, Math.min(1, x / w)),
+        ny: Math.max(0, Math.min(1, y / h)),
+      };
+    }
+
+    function relToPx(nx, ny) {
+      const { w, h } = getLayerDimensions();
+      return {
+        x: nx * w,
+        y: ny * h,
+      };
+    }
+
+    function createStickerSvgElement(def, itemScale = 1, zoomRatio = getZoomRatio()) {
       const svg = document.createElementNS(SVG_NS, 'svg');
+      const effectiveScale = itemScale * zoomRatio;
 
       if (def.shape === 'ring') {
         const baseSize = 72;
-        const size = Math.round(baseSize * itemScale);
+        const size = Math.max(12, Math.round(baseSize * effectiveScale));
         svg.setAttribute('viewBox', '0 0 100 100');
         svg.setAttribute('width', size);
         svg.setAttribute('height', size);
@@ -481,7 +508,7 @@
         svg.appendChild(text);
       } else if (def.shape === 'circle') {
         const baseSize = 68;
-        const size = Math.round(baseSize * itemScale);
+        const size = Math.max(12, Math.round(baseSize * effectiveScale));
         svg.setAttribute('viewBox', '0 0 100 100');
         svg.setAttribute('width', size);
         svg.setAttribute('height', size);
@@ -507,8 +534,8 @@
       } else {
         const baseW = 112;
         const baseH = 68;
-        const w = Math.round(baseW * itemScale);
-        const h = Math.round(baseH * itemScale);
+        const w = Math.max(18, Math.round(baseW * effectiveScale));
+        const h = Math.max(12, Math.round(baseH * effectiveScale));
         svg.setAttribute('viewBox', '0 0 160 100');
         svg.setAttribute('width', w);
         svg.setAttribute('height', h);
@@ -546,16 +573,19 @@
         btn.type = 'button';
         btn.className = 'sticker-btn';
         btn.title = `加入向量貼紙：${def.label}`;
-        btn.appendChild(createStickerSvgElement(def, 0.42));
+        btn.appendChild(createStickerSvgElement(def, 0.42, 1));
         btn.addEventListener('click', () => {
           pushUndoState();
           const currentScale = Number(stickerScaleInput.value) || 1;
           const offsetIndex = stickerItems.length % 8;
+          const startPxX = 24 + offsetIndex * 18;
+          const startPxY = 24 + offsetIndex * 18;
+          const rel = pxToRel(startPxX, startPxY);
           const newSticker = {
             id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
             key: def.key,
-            x: 24 + offsetIndex * 18,
-            y: 24 + offsetIndex * 18,
+            nx: rel.nx,
+            ny: rel.ny,
             stickerScale: currentScale,
           };
           stickerItems.push(newSticker);
@@ -705,20 +735,24 @@
       renderOverlays();
     });
 
-    // 建立向量圖形 SVG 節點（供畫面顯示與匯出 PNG 共用）
-    function buildVectorShapeNode(shape) {
+    function buildVectorShapeNode(shape, zoomRatio = getZoomRatio()) {
+      const { w, h } = getLayerDimensions();
       const g = document.createElementNS(SVG_NS, 'g');
       g.classList.add('vector-shape-group');
       if (shape.id === selectedShapeId) {
         g.classList.add('selected');
       }
 
-      const strokeWidth = shape.lineWidth;
+      const strokeWidth = Math.max(1, shape.lineWidth * zoomRatio);
       const color = shape.color;
 
       if (shape.type === 'pen' && Array.isArray(shape.points) && shape.points.length > 0) {
         const d = shape.points
-          .map((pt, idx) => `${idx === 0 ? 'M' : 'L'} ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`)
+          .map((pt, idx) => {
+            const px = pt.nx * w;
+            const py = pt.ny * h;
+            return `${idx === 0 ? 'M' : 'L'} ${px.toFixed(1)} ${py.toFixed(1)}`;
+          })
           .join(' ');
         const path = document.createElementNS(SVG_NS, 'path');
         path.setAttribute('d', d);
@@ -729,733 +763,36 @@
         path.setAttribute('stroke-linejoin', 'round');
         g.appendChild(path);
       } else if (shape.type === 'line') {
+        const x1 = shape.nx1 * w;
+        const y1 = shape.ny1 * h;
+        const x2 = shape.nx2 * w;
+        const y2 = shape.ny2 * h;
         const line = document.createElementNS(SVG_NS, 'line');
-        line.setAttribute('x1', shape.x1);
-        line.setAttribute('y1', shape.y1);
-        line.setAttribute('x2', shape.x2);
-        line.setAttribute('y2', shape.y2);
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
         line.setAttribute('stroke', color);
         line.setAttribute('stroke-width', strokeWidth);
         line.setAttribute('stroke-linecap', 'round');
         g.appendChild(line);
       } else if (shape.type === 'arrow') {
-        const headLen = Math.max(12, strokeWidth * 3.2);
-        const angle = Math.atan2(shape.y2 - shape.y1, shape.x2 - shape.x1);
+        const x1 = shape.nx1 * w;
+        const y1 = shape.ny1 * h;
+        const x2 = shape.nx2 * w;
+        const y2 = shape.ny2 * h;
+        const headLen = Math.max(8, strokeWidth * 3.2);
+        const angle = Math.atan2(y2 - y1, x2 - x1);
 
         const line = document.createElementNS(SVG_NS, 'line');
-        line.setAttribute('x1', shape.x1);
-        line.setAttribute('y1', shape.y1);
-        line.setAttribute('x2', shape.x2);
-        line.setAttribute('y2', shape.y2);
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
         line.setAttribute('stroke', color);
         line.setAttribute('stroke-width', strokeWidth);
         line.setAttribute('stroke-linecap', 'round');
         g.appendChild(line);
 
-        const p1x = shape.x2 - headLen * Math.cos(angle - Math.PI / 6);
-        const p1y = shape.y2 - headLen * Math.sin(angle - Math.PI / 6);
-        const p2x = shape.x2 - headLen * Math.cos(angle + Math.PI / 6);
-        const p2y = shape.y2 - headLen * Math.sin(angle + Math.PI / 6);
-
-        const head = document.createElementNS(SVG_NS, 'polygon');
-        head.setAttribute(
-          'points',
-          `${shape.x2},${shape.y2} ${p1x.toFixed(1)},${p1y.toFixed(1)} ${p2x.toFixed(1)},${p2y.toFixed(1)}`
-        );
-        head.setAttribute('fill', color);
-        g.appendChild(head);
-      } else if (shape.type === 'circle') {
-        const rx = Math.max(1, Math.abs(shape.x2 - shape.x1) / 2);
-        const ry = Math.max(1, Math.abs(shape.y2 - shape.y1) / 2);
-        const cx = Math.min(shape.x1, shape.x2) + rx;
-        const cy = Math.min(shape.y1, shape.y2) + ry;
-
-        const ellipse = document.createElementNS(SVG_NS, 'ellipse');
-        ellipse.setAttribute('cx', cx);
-        ellipse.setAttribute('cy', cy);
-        ellipse.setAttribute('rx', rx);
-        ellipse.setAttribute('ry', ry);
-        ellipse.setAttribute('fill', 'none');
-        ellipse.setAttribute('stroke', color);
-        ellipse.setAttribute('stroke-width', strokeWidth);
-        g.appendChild(ellipse);
-      } else if (shape.type === 'rect') {
-        const rect = document.createElementNS(SVG_NS, 'rect');
-        rect.setAttribute('x', Math.min(shape.x1, shape.x2));
-        rect.setAttribute('y', Math.min(shape.y1, shape.y2));
-        rect.setAttribute('width', Math.abs(shape.x2 - shape.x1));
-        rect.setAttribute('height', Math.abs(shape.y2 - shape.y1));
-        rect.setAttribute('fill', 'none');
-        rect.setAttribute('stroke', color);
-        rect.setAttribute('stroke-width', strokeWidth);
-        g.appendChild(rect);
-      }
-
-      return g;
-    }
-
-    function renderVectorShapes() {
-      vectorDrawLayerEl.innerHTML = '';
-      for (const shape of vectorShapes) {
-        const node = buildVectorShapeNode(shape);
-        node.addEventListener('click', (e) => {
-          if (activeTool === 'eraser') {
-            e.stopPropagation();
-            pushUndoState();
-            vectorShapes = vectorShapes.filter((s) => s.id !== shape.id);
-            if (selectedShapeId === shape.id) selectedShapeId = null;
-            renderVectorShapes();
-            return;
-          }
-          if (activeTool === 'none') {
-            e.stopPropagation();
-            selectedShapeId = selectedShapeId === shape.id ? null : shape.id;
-            selectedTextId = null;
-            selectedStickerId = null;
-            renderVectorShapes();
-            renderOverlays();
-          }
-        });
-        vectorDrawLayerEl.appendChild(node);
-      }
-
-      if (draftVectorShape) {
-        vectorDrawLayerEl.appendChild(buildVectorShapeNode(draftVectorShape));
-      }
-    }
-
-    window.addEventListener('keydown', (e) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedShapeId !== null) {
-        const tag = document.activeElement?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-        pushUndoState();
-        vectorShapes = vectorShapes.filter((s) => s.id !== selectedShapeId);
-        selectedShapeId = null;
-        renderVectorShapes();
-      }
-    });
-
-    function renderOverlays() {
-      overlayLayerEl.innerHTML = '';
-
-      for (const sItem of stickerItems) {
-        const def = STICKER_DEFS.find((d) => d.key === sItem.key);
-        if (!def) continue;
-
-        const wrap = document.createElement('div');
-        wrap.className = 'vector-sticker-item' + (sItem.id === selectedStickerId ? ' selected' : '');
-        wrap.style.left = `${sItem.x}px`;
-        wrap.style.top = `${sItem.y}px`;
-
-        const svgEl = createStickerSvgElement(def, sItem.stickerScale || 1);
-        wrap.appendChild(svgEl);
-
-        const delBadge = document.createElement('span');
-        delBadge.className = 'sticker-del-badge';
-        delBadge.textContent = '刪除';
-        delBadge.addEventListener('pointerdown', (e) => e.stopPropagation());
-        delBadge.addEventListener('click', (e) => {
-          e.stopPropagation();
-          pushUndoState();
-          stickerItems = stickerItems.filter((s) => s.id !== sItem.id);
-          if (selectedStickerId === sItem.id) selectedStickerId = null;
-          renderOverlays();
-        });
-        wrap.appendChild(delBadge);
-
-        wrap.addEventListener('pointerdown', (e) => {
-          e.stopPropagation();
-          selectedStickerId = sItem.id;
-          selectedTextId = null;
-          selectedShapeId = null;
-          stickerScaleInput.value = sItem.stickerScale || 1;
-          stickerScaleLabel.textContent = `${Number(sItem.stickerScale || 1).toFixed(1)}x`;
-          renderOverlays();
-          renderVectorShapes();
-
-          const currentWrap = overlayLayerEl.querySelector('.vector-sticker-item.selected');
-          if (!currentWrap) return;
-
-          pushUndoState();
-          draggingStickerId = sItem.id;
-          const stackRect = overlayLayerEl.getBoundingClientRect();
-          stickerDragOffsetX = e.clientX - stackRect.left - sItem.x;
-          stickerDragOffsetY = e.clientY - stackRect.top - sItem.y;
-          currentWrap.setPointerCapture(e.pointerId);
-        });
-
-        wrap.addEventListener('pointermove', (e) => {
-          if (draggingStickerId !== sItem.id) return;
-          const stackRect = overlayLayerEl.getBoundingClientRect();
-          sItem.x = Math.max(0, e.clientX - stackRect.left - stickerDragOffsetX);
-          sItem.y = Math.max(0, e.clientY - stackRect.top - stickerDragOffsetY);
-          wrap.style.left = `${sItem.x}px`;
-          wrap.style.top = `${sItem.y}px`;
-        });
-
-        const stopStickerDrag = (e) => {
-          if (draggingStickerId === sItem.id) {
-            draggingStickerId = null;
-            if (e && wrap.hasPointerCapture(e.pointerId)) {
-              wrap.releasePointerCapture(e.pointerId);
-            }
-          }
-        };
-
-        wrap.addEventListener('pointerup', stopStickerDrag);
-        wrap.addEventListener('pointercancel', stopStickerDrag);
-
-        overlayLayerEl.appendChild(wrap);
-      }
-
-      for (const item of textItems) {
-        const box = document.createElement('div');
-        box.className = 'floating-text-box' + (item.id === selectedTextId ? ' selected' : '');
-        box.style.left = `${item.x}px`;
-        box.style.top = `${item.y}px`;
-        box.style.color = item.color;
-        box.style.fontSize = `${item.fontSize}px`;
-        box.style.fontFamily = FONT_FAMILY;
-
-        const actions = document.createElement('div');
-        actions.className = 'floating-text-actions';
-
-        const editSpan = document.createElement('span');
-        editSpan.textContent = '編輯';
-        editSpan.addEventListener('pointerdown', (e) => e.stopPropagation());
-        editSpan.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const updated = prompt('修改文字內容：', item.text);
-          if (updated && updated.trim()) {
-            pushUndoState();
-            item.text = updated.trim();
-            renderOverlays();
-          }
-        });
-
-        const delSpan = document.createElement('span');
-        delSpan.className = 'del-btn';
-        delSpan.textContent = '刪除';
-        delSpan.addEventListener('pointerdown', (e) => e.stopPropagation());
-        delSpan.addEventListener('click', (e) => {
-          e.stopPropagation();
-          pushUndoState();
-          textItems = textItems.filter((t) => t.id !== item.id);
-          if (selectedTextId === item.id) selectedTextId = null;
-          renderOverlays();
-        });
-
-        const contentSpan = document.createElement('span');
-        contentSpan.textContent = item.text;
-
-        box.appendChild(contentSpan);
-        box.appendChild(actions);
-        actions.appendChild(editSpan);
-        actions.appendChild(delSpan);
-
-        box.addEventListener('pointerdown', (e) => {
-          e.stopPropagation();
-          selectedTextId = item.id;
-          selectedStickerId = null;
-          selectedShapeId = null;
-          fontSizeInput.value = item.fontSize;
-          renderOverlays();
-          renderVectorShapes();
-
-          const targetBox = overlayLayerEl.querySelector('.floating-text-box.selected');
-          if (!targetBox) return;
-
-          pushUndoState();
-          draggingTextId = item.id;
-          const stackRect = overlayLayerEl.getBoundingClientRect();
-          textDragOffsetX = e.clientX - stackRect.left - item.x;
-          textDragOffsetY = e.clientY - stackRect.top - item.y;
-          targetBox.setPointerCapture(e.pointerId);
-        });
-
-        box.addEventListener('pointermove', (e) => {
-          if (draggingTextId !== item.id) return;
-          const stackRect = overlayLayerEl.getBoundingClientRect();
-          item.x = Math.max(0, e.clientX - stackRect.left - textDragOffsetX);
-          item.y = Math.max(0, e.clientY - stackRect.top - textDragOffsetY);
-          box.style.left = `${item.x}px`;
-          box.style.top = `${item.y}px`;
-        });
-
-        const stopTextDrag = (e) => {
-          if (draggingTextId === item.id) {
-            draggingTextId = null;
-            if (e && box.hasPointerCapture(e.pointerId)) {
-              box.releasePointerCapture(e.pointerId);
-            }
-          }
-        };
-
-        box.addEventListener('pointerup', stopTextDrag);
-        box.addEventListener('pointercancel', stopTextDrag);
-
-        overlayLayerEl.appendChild(box);
-      }
-    }
-
-    overlayLayerEl.addEventListener('pointerdown', (e) => {
-      if (e.target === overlayLayerEl) {
-        selectedTextId = null;
-        selectedStickerId = null;
-        selectedShapeId = null;
-        renderOverlays();
-        renderVectorShapes();
-      }
-    });
-
-    function renderSvgMarkupToContext(svgEl, width, height, targetCtx, x, y) {
-      const xml = new XMLSerializer().serializeToString(svgEl);
-      const blob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-          targetCtx.drawImage(img, x, y, width, height);
-          URL.revokeObjectURL(url);
-          resolve();
-        };
-        img.onerror = () => {
-          URL.revokeObjectURL(url);
-          resolve();
-        };
-        img.src = url;
-      });
-    }
-
-    downloadPngBtn.addEventListener('click', async () => {
-      if (canvas.width === 0 || canvas.height === 0) return;
-      const exportCanvas = document.createElement('canvas');
-      exportCanvas.width = canvas.width;
-      exportCanvas.height = canvas.height;
-      const exportCtx = exportCanvas.getContext('2d');
-
-      exportCtx.drawImage(canvas, 0, 0);
-      exportCtx.drawImage(drawCanvas, 0, 0);
-
-      // 合成向量繪圖圖層
-      if (vectorShapes.length > 0) {
-        const tempSvg = document.createElementNS(SVG_NS, 'svg');
-        tempSvg.setAttribute('xmlns', SVG_NS);
-        tempSvg.setAttribute('width', canvas.width);
-        tempSvg.setAttribute('height', canvas.height);
-        tempSvg.setAttribute('viewBox', `0 0 ${canvas.width} ${canvas.height}`);
-        for (const shape of vectorShapes) {
-          tempSvg.appendChild(buildVectorShapeNode(shape));
-        }
-        await renderSvgMarkupToContext(tempSvg, canvas.width, canvas.height, exportCtx, 0, 0);
-      }
-
-      // 合成向量貼紙
-      for (const sItem of stickerItems) {
-        const def = STICKER_DEFS.find((d) => d.key === sItem.key);
-        if (def) {
-          const svgEl = createStickerSvgElement(def, sItem.stickerScale || 1);
-          const w = Number(svgEl.getAttribute('width'));
-          const h = Number(svgEl.getAttribute('height'));
-          await renderSvgMarkupToContext(svgEl, w, h, exportCtx, sItem.x, sItem.y);
-        }
-      }
-
-      // 合成文字
-      for (const item of textItems) {
-        exportCtx.save();
-        exportCtx.font = `bold ${item.fontSize}px ${FONT_FAMILY}`;
-        exportCtx.fillStyle = item.color;
-        exportCtx.textBaseline = 'top';
-        exportCtx.fillText(item.text, item.x + 8, item.y + 4);
-        exportCtx.restore();
-      }
-
-      const link = document.createElement('a');
-      const now = new Date();
-      const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-      link.download = `chart_annotated_${Math.round(scale * 100)}pct_${stamp}.png`;
-      link.href = exportCanvas.toDataURL('image/png');
-      link.click();
-    });
-
-    const toolButtons = {
-      none: document.getElementById('tool-none'),
-      pen: document.getElementById('tool-pen'),
-      line: document.getElementById('tool-line'),
-      arrow: document.getElementById('tool-arrow'),
-      circle: document.getElementById('tool-circle'),
-      rect: document.getElementById('tool-rect'),
-      text: document.getElementById('tool-text'),
-      eraser: document.getElementById('tool-eraser'),
-    };
-
-    const VECTOR_SHAPE_TOOLS = ['pen', 'line', 'arrow', 'circle', 'rect'];
-
-    function setTool(toolName) {
-      activeTool = toolName;
-      Object.entries(toolButtons).forEach(([key, btn]) => {
-        btn.classList.toggle('active', key === toolName);
-      });
-
-      const isVectorShapeTool = VECTOR_SHAPE_TOOLS.includes(toolName);
-      vectorDrawLayerEl.classList.toggle('drawing-active', isVectorShapeTool);
-      drawCanvas.style.pointerEvents = toolName === 'eraser' ? 'auto' : 'none';
-
-      if (toolName === 'eraser') {
-        drawCanvas.style.cursor = 'none';
-        updateEraserCursorSize();
-      } else {
-        eraserCursorEl.style.display = 'none';
-        vectorDrawLayerEl.style.cursor = isVectorShapeTool ? 'crosshair' : 'default';
-      }
-    }
-
-    Object.entries(toolButtons).forEach(([key, btn]) => {
-      btn.addEventListener('click', () => setTool(key));
-    });
-
-    function getStackCoords(e, targetEl) {
-      const rect = targetEl.getBoundingClientRect();
-      return {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
-      };
-    }
-
-    // 向量圖形（隨意畫線、直線、箭頭、圓形、正方形）繪製事件
-    vectorDrawLayerEl.addEventListener('pointerdown', (e) => {
-      if (!VECTOR_SHAPE_TOOLS.includes(activeTool)) return;
-      const { x, y } = getStackCoords(e, vectorDrawLayerEl);
-      pushUndoState();
-      isDrawing = true;
-      hasStrokeMoved = false;
-      startX = x;
-      startY = y;
-      selectedShapeId = null;
-      vectorDrawLayerEl.setPointerCapture(e.pointerId);
-
-      const lineWidth = Number(lineWidthSelect.value);
-      const color = colorInput.value;
-
-      if (activeTool === 'pen') {
-        penPoints = [{ x, y }];
-        draftVectorShape = {
-          id: 'draft',
-          type: 'pen',
-          points: penPoints,
-          lineWidth,
-          color,
-        };
-      } else {
-        draftVectorShape = {
-          id: 'draft',
-          type: activeTool,
-          x1: x,
-          y1: y,
-          x2: x,
-          y2: y,
-          lineWidth,
-          color,
-        };
-      }
-      renderVectorShapes();
-    });
-
-    vectorDrawLayerEl.addEventListener('pointermove', (e) => {
-      if (!isDrawing || !draftVectorShape || !VECTOR_SHAPE_TOOLS.includes(activeTool)) return;
-      const { x, y } = getStackCoords(e, vectorDrawLayerEl);
-      hasStrokeMoved = true;
-
-      if (activeTool === 'pen') {
-        penPoints.push({ x, y });
-        draftVectorShape.points = penPoints;
-      } else {
-        draftVectorShape.x2 = x;
-        draftVectorShape.y2 = y;
-      }
-      renderVectorShapes();
-    });
-
-    function finishVectorDrawing(e) {
-      if (!isDrawing) return;
-      isDrawing = false;
-
-      if (hasStrokeMoved && draftVectorShape) {
-        const finalized = cloneVectorShape(draftVectorShape);
-        finalized.id = `vec_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        vectorShapes.push(finalized);
-      } else if (undoStack.length > 0) {
-        undoStack.pop();
-        updateUndoButton();
-      }
-
-      draftVectorShape = null;
-      penPoints = [];
-      hasStrokeMoved = false;
-      renderVectorShapes();
-
-      if (e && vectorDrawLayerEl.hasPointerCapture(e.pointerId)) {
-        vectorDrawLayerEl.releasePointerCapture(e.pointerId);
-      }
-    }
-
-    vectorDrawLayerEl.addEventListener('pointerup', finishVectorDrawing);
-    vectorDrawLayerEl.addEventListener('pointercancel', finishVectorDrawing);
-
-    // 橡皮擦（點陣筆跡擦除＋游標邊界框）
-    let isErasing = false;
-    let eraseMoved = false;
-
-    drawCanvas.addEventListener('pointerdown', (e) => {
-      if (activeTool !== 'eraser') return;
-      const { x, y } = getStackCoords(e, drawCanvas);
-      updateEraserCursorPosition(x, y);
-      pushUndoState();
-      isErasing = true;
-      eraseMoved = false;
-      drawCanvas.setPointerCapture(e.pointerId);
-      drawCtx.beginPath();
-      drawCtx.moveTo(x, y);
-    });
-
-    drawCanvas.addEventListener('pointermove', (e) => {
-      const { x, y } = getStackCoords(e, drawCanvas);
-      updateEraserCursorPosition(x, y);
-      if (!isErasing || activeTool !== 'eraser') return;
-      eraseMoved = true;
-      drawCtx.save();
-      drawCtx.globalCompositeOperation = 'destination-out';
-      drawCtx.lineWidth = Number(eraserSizeInput.value);
-      drawCtx.lineCap = 'round';
-      drawCtx.lineJoin = 'round';
-      drawCtx.lineTo(x, y);
-      drawCtx.stroke();
-      drawCtx.restore();
-    });
-
-    drawCanvas.addEventListener('pointerleave', () => {
-      eraserCursorEl.style.display = 'none';
-    });
-
-    function finishErasing(e) {
-      if (!isErasing) return;
-      isErasing = false;
-      if (!eraseMoved && undoStack.length > 0) {
-        undoStack.pop();
-        updateUndoButton();
-      }
-      eraseMoved = false;
-      if (e && drawCanvas.hasPointerCapture(e.pointerId)) {
-        drawCanvas.releasePointerCapture(e.pointerId);
-      }
-    }
-
-    drawCanvas.addEventListener('pointerup', finishErasing);
-    drawCanvas.addEventListener('pointercancel', finishErasing);
-
-    toggleSidebarBtn.addEventListener('click', () => {
-      const isCollapsed = sidebarEl.classList.toggle('collapsed');
-      toggleSidebarBtn.textContent = isCollapsed ? '展開圖層' : '收合圖層';
-    });
-
-    function extractLeadingNumber(name) {
-      const normalized = String(name || '')
-        .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
-        .trim();
-      const match = normalized.match(/^(\d+)/);
-      return match ? parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
-    }
-
-    function isHiddenLayer(name) {
-      const num = extractLeadingNumber(name);
-      return HIDDEN_NUMBERS.includes(num);
-    }
-
-    async function renderLayersUI() {
-      layersListEl.innerHTML = '';
-      visibleGroupIds = [];
-
-      if (!optionalContentConfig) {
-        layersListEl.textContent = '此 PDF 未包含圖層資訊';
-        return;
-      }
-
-      const groups = optionalContentConfig.getGroups();
-      if (!groups || Object.keys(groups).length === 0) {
-        layersListEl.textContent = '找不到可用圖層';
-        return;
-      }
-
-      for (const [groupId, group] of Object.entries(groups)) {
-        const layerName = group.name || groupId;
-        if (isHiddenLayer(layerName)) {
-          optionalContentConfig.setVisibility(groupId, false);
-        }
-      }
-
-      const entries = Object.entries(groups)
-        .filter(([groupId, group]) => !isHiddenLayer(group.name || groupId))
-        .sort((a, b) => {
-          const nameA = a[1].name || a[0];
-          const nameB = b[1].name || b[0];
-          const numA = extractLeadingNumber(nameA);
-          const numB = extractLeadingNumber(nameB);
-
-          if (numA !== numB) return numA - numB;
-          return String(nameA).localeCompare(String(nameB), 'zh-Hant');
-        });
-
-      for (const [groupId, group] of entries) {
-        visibleGroupIds.push(groupId);
-
-        const label = document.createElement('label');
-        label.className = 'layer-item';
-
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.dataset.groupId = groupId;
-        checkbox.checked = optionalContentConfig.isVisible(groupId);
-
-        checkbox.addEventListener('change', async () => {
-          optionalContentConfig.setVisibility(groupId, checkbox.checked);
-          await renderPage();
-        });
-
-        const text = document.createElement('span');
-        text.textContent = group.name || groupId;
-
-        label.appendChild(checkbox);
-        label.appendChild(text);
-        layersListEl.appendChild(label);
-      }
-    }
-
-    async function setAllLayersVisibility(checked) {
-      if (!optionalContentConfig || visibleGroupIds.length === 0) return;
-
-      for (const groupId of visibleGroupIds) {
-        optionalContentConfig.setVisibility(groupId, checked);
-      }
-
-      const checkboxes = layersListEl.querySelectorAll('input[type="checkbox"]');
-      checkboxes.forEach((cb) => {
-        cb.checked = checked;
-      });
-
-      await renderPage();
-    }
-
-    async function renderPage() {
-      if (!pdfDoc) return;
-      if (renderTask) renderTask.cancel();
-
-      const page = await pdfDoc.getPage(1);
-      const viewport = page.getViewport({ scale });
-
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-
-      const prevDrawing = document.createElement('canvas');
-      prevDrawing.width = drawCanvas.width;
-      prevDrawing.height = drawCanvas.height;
-      prevDrawing.getContext('2d').drawImage(drawCanvas, 0, 0);
-
-      drawCanvas.height = viewport.height;
-      drawCanvas.width = viewport.width;
-      drawCtx.drawImage(prevDrawing, 0, 0, drawCanvas.width, drawCanvas.height);
-
-      vectorDrawLayerEl.setAttribute('width', viewport.width);
-      vectorDrawLayerEl.setAttribute('height', viewport.height);
-      vectorDrawLayerEl.setAttribute('viewBox', `0 0 ${viewport.width} ${viewport.height}`);
-      vectorDrawLayerEl.style.width = `${viewport.width}px`;
-      vectorDrawLayerEl.style.height = `${viewport.height}px`;
-      renderVectorShapes();
-
-      overlayLayerEl.style.width = `${viewport.width}px`;
-      overlayLayerEl.style.height = `${viewport.height}px`;
-      renderOverlays();
-
-      zoomLabelEl.textContent = `${Math.round(scale * 100)}%`;
-      viewerContainerEl.scrollTop = 0;
-      viewerContainerEl.scrollLeft = 0;
-
-      renderTask = page.render({
-        canvasContext: ctx,
-        viewport,
-        optionalContentConfigPromise: Promise.resolve(optionalContentConfig),
-      });
-
-      try {
-        await renderTask.promise;
-      } catch (err) {
-        if (err?.name !== 'RenderingCancelledException') {
-          console.error(err);
-        }
-      }
-    }
-
-    document.getElementById('zoom-in').addEventListener('click', async () => {
-      scale = Math.min(6.0, +(scale + 0.5).toFixed(2));
-      await renderPage();
-    });
-
-    document.getElementById('zoom-out').addEventListener('click', async () => {
-      scale = Math.max(0.25, +(scale - 0.5).toFixed(2));
-      await renderPage();
-    });
-
-    document.getElementById('zoom-150').addEventListener('click', async () => {
-      scale = 1.5;
-      await renderPage();
-    });
-
-    document.getElementById('zoom-reset').addEventListener('click', async () => {
-      scale = 1.0;
-      await renderPage();
-    });
-
-    document.getElementById('layers-check-all').addEventListener('click', async () => {
-      await setAllLayersVisibility(true);
-    });
-
-    document.getElementById('layers-uncheck-all').addEventListener('click', async () => {
-      await setAllLayersVisibility(false);
-    });
-
-    setTool('none');
-    initStickerButtons();
-
-    async function init() {
-      const timer = setTimeout(() => {
-        if (layersListEl.textContent.includes('正在載入')) {
-          layersListEl.textContent = '載入逾時，請按 F12 → 主控台查看是否有網路或 PDF 解析訊息。';
-        }
-      }, 10000);
-
-      try {
-        const loadingTask = pdfjsLib.getDocument(PDF_URL);
-        pdfDoc = await loadingTask.promise;
-
-        try {
-          optionalContentConfig = await pdfDoc.getOptionalContentConfig();
-        } catch (ocErr) {
-          console.warn('讀取圖層設定發生警告:', ocErr);
-          optionalContentConfig = null;
-        }
-
-        await renderLayersUI();
-        await renderPage();
-      } catch (err) {
-        layersListEl.textContent = `載入失敗：${err?.message || '請確認 chart.pdf 是否與 index.html 在同一層。'}`;
-        console.error('PDF 載入錯誤:', err);
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-
-    init();
-  </script>
-</body>
-</html>
+        const p1x = x2 - headLen * Math.cos(angle - Math.PI / 6);
+        const p1y = y2

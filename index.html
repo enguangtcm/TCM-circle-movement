@@ -350,9 +350,11 @@
     .vector-sticker-item.selected .sticker-del-badge {
       display: inline-block;
     }
+
+    /* 多行、可調長寬、文字距邊界 0.15cm 的文字框 */
     .floating-text-box {
       position: absolute;
-      padding: 4px 8px;
+      padding: 0.15cm;
       border: 1px dashed rgba(29, 78, 216, 0.65);
       background: rgba(255, 255, 255, 0.88);
       border-radius: 4px;
@@ -360,15 +362,38 @@
       user-select: none;
       touch-action: none;
       pointer-events: auto;
-      line-height: 1.25;
+      line-height: 1.3;
       font-family: "Microsoft JhengHei", "Noto Sans TC", sans-serif;
       font-weight: bold;
       z-index: 7;
       white-space: pre-wrap;
+      word-break: break-word;
+      overflow: visible;
     }
     .floating-text-box.selected {
       border: 1.5px solid #1d4ed8;
       box-shadow: 0 2px 8px rgba(29, 78, 216, 0.25);
+    }
+    .floating-text-content {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    .text-resize-handle {
+      display: none;
+      position: absolute;
+      right: -5px;
+      bottom: -5px;
+      width: 11px;
+      height: 11px;
+      background: #1d4ed8;
+      border: 1.5px solid #ffffff;
+      border-radius: 2px;
+      cursor: nwse-resize;
+      z-index: 11;
+    }
+    .floating-text-box.selected .text-resize-handle {
+      display: block;
     }
     .floating-text-actions {
       display: none;
@@ -492,7 +517,7 @@
       <div id="sticker-buttons" style="display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;"></div>
       <span class="toolbar-divider"></span>
       <label class="inline-group">貼紙大小
-        <input type="range" id="sticker-scale" min="0.5" max="2.5" step="0.1" value="1" />
+        <input type="range" id="sticker-scale" min="0.3" max="3.0" step="0.1" value="1.0" />
         <span id="sticker-scale-label">1.0x</span>
       </label>
     </div>
@@ -508,11 +533,15 @@
     </div>
   </section>
 
-  <!-- 普通腳本：立即建立向量貼紙按鈕、調色盤、向量繪圖、橡皮擦、加文字、手抓移動與相對縮放 -->
   <script>
     const FONT_FAMILY = '"Microsoft JhengHei", "Noto Sans TC", sans-serif';
     const SVG_NS = 'http://www.w3.org/2000/svg';
     const BASE_SCALE = 1.5;
+
+    // 0.15cm 換算為 96 DPI 螢幕像素（1 inch = 2.54 cm -> 0.15 / 2.54 * 96 ≈ 5.67 px）
+    function getPad015CmPx(zoomRatio = getZoomRatio()) {
+      return (0.15 / 2.54) * 96 * zoomRatio;
+    }
 
     const THEME_BASE_COLORS = [
       '#ffffff', '#000000', '#eeece1', '#1f497d', '#4f81bd',
@@ -564,11 +593,17 @@
     let vectorShapes = [];
     let selectedShapeId = null;
 
+    // textItem 支援多行、自訂寬高比例（nw, nh，若為 null 則自動貼合文字大小）
     let textItems = [];
     let selectedTextId = null;
     let draggingTextId = null;
+    let resizingTextId = null;
     let textDragOffsetX = 0;
     let textDragOffsetY = 0;
+    let textResizeStartX = 0;
+    let textResizeStartY = 0;
+    let textResizeStartW = 0;
+    let textResizeStartH = 0;
 
     let stickerItems = [];
     let selectedStickerId = null;
@@ -811,7 +846,7 @@
         btn.appendChild(createStickerSvgElement(def, 0.42, 1));
         btn.addEventListener('click', () => {
           pushUndoState();
-          const currentScale = Number(stickerScaleInput?.value) || 1;
+          const currentScale = Math.min(3.0, Math.max(0.3, Number(stickerScaleInput?.value) || 1.0));
           const offsetIndex = stickerItems.length % 8;
           const startPxX = (viewerContainerEl?.scrollLeft || 0) + 28 + offsetIndex * 18;
           const startPxY = (viewerContainerEl?.scrollTop || 0) + 28 + offsetIndex * 18;
@@ -835,7 +870,7 @@
     }
 
     stickerScaleInput?.addEventListener('input', () => {
-      const val = Number(stickerScaleInput.value) || 1;
+      const val = Math.min(3.0, Math.max(0.3, Number(stickerScaleInput.value) || 1.0));
       if (stickerScaleLabel) stickerScaleLabel.textContent = `${val.toFixed(1)}x`;
       if (selectedStickerId !== null) {
         const target = stickerItems.find((s) => s.id === selectedStickerId);
@@ -962,6 +997,9 @@
       renderOverlays();
     });
 
+    // ---------------------------------------------------------
+    // 局部精準橡皮擦：將線段中落在橡皮擦半徑內的點/段裁切掉，保留其餘部分
+    // ---------------------------------------------------------
     function distToSegment(px, py, x1, y1, x2, y2) {
       const dx = x2 - x1;
       const dy = y2 - y1;
@@ -972,71 +1010,197 @@
       return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
     }
 
-    function isPointHittingShape(px, py, shape, radius) {
+    function splitPolylineByEraser(points, px, py, radius) {
       const { w, h } = getLayerDimensions();
-      const pad = radius + Math.max(2, (shape.lineWidth * getZoomRatio()) / 2);
+      if (!Array.isArray(points) || points.length === 0) return { segments: [], modified: false };
 
-      if (shape.type === 'pen' && Array.isArray(shape.points)) {
-        if (shape.points.length === 1) {
-          const p0 = shape.points[0];
-          return Math.hypot(px - p0.nx * w, py - p0.ny * h) <= pad;
-        }
-        for (let i = 0; i < shape.points.length - 1; i++) {
-          const a = shape.points[i];
-          const b = shape.points[i + 1];
-          if (distToSegment(px, py, a.nx * w, a.ny * h, b.nx * w, b.ny * h) <= pad) {
-            return true;
+      if (points.length === 1) {
+        const p0 = points[0];
+        const hit = Math.hypot(px - p0.nx * w, py - p0.ny * h) <= radius;
+        return hit ? { segments: [], modified: true } : { segments: [[{ ...p0 }]], modified: false };
+      }
+
+      const segments = [];
+      let currentSeg = [];
+      let modified = false;
+
+      for (let i = 0; i < points.length - 1; i++) {
+        const a = points[i];
+        const b = points[i + 1];
+        const ax = a.nx * w;
+        const ay = a.ny * h;
+        const bx = b.nx * w;
+        const by = b.ny * h;
+
+        const aHit = Math.hypot(px - ax, py - ay) <= radius;
+        const bHit = Math.hypot(px - bx, py - by) <= radius;
+        const segHit = distToSegment(px, py, ax, ay, bx, by) <= radius;
+
+        if (!segHit) {
+          if (currentSeg.length === 0) currentSeg.push({ ...a });
+          currentSeg.push({ ...b });
+        } else {
+          modified = true;
+          if (!aHit) {
+            if (currentSeg.length === 0) currentSeg.push({ ...a });
+            if (currentSeg.length > 0) {
+              segments.push(currentSeg);
+              currentSeg = [];
+            }
+          } else if (currentSeg.length > 0) {
+            segments.push(currentSeg);
+            currentSeg = [];
+          }
+          if (!bHit) {
+            currentSeg = [{ ...b }];
           }
         }
-        return false;
       }
 
-      const x1 = shape.nx1 * w;
-      const y1 = shape.ny1 * h;
-      const x2 = shape.nx2 * w;
-      const y2 = shape.ny2 * h;
+      if (currentSeg.length > 0) {
+        segments.push(currentSeg);
+      }
 
-      if (shape.type === 'line' || shape.type === 'arrow') {
-        return distToSegment(px, py, x1, y1, x2, y2) <= pad;
+      return { segments, modified };
+    }
+
+    function sampleSegmentPoints(nx1, ny1, nx2, ny2, steps = 28) {
+      const pts = [];
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        pts.push({
+          nx: nx1 + (nx2 - nx1) * t,
+          ny: ny1 + (ny2 - ny1) * t,
+        });
       }
-      if (shape.type === 'rect') {
-        const minX = Math.min(x1, x2);
-        const maxX = Math.max(x1, x2);
-        const minY = Math.min(y1, y2);
-        const maxY = Math.max(y1, y2);
-        return (
-          distToSegment(px, py, minX, minY, maxX, minY) <= pad ||
-          distToSegment(px, py, maxX, minY, maxX, maxY) <= pad ||
-          distToSegment(px, py, maxX, maxY, minX, maxY) <= pad ||
-          distToSegment(px, py, minX, maxY, minX, minY) <= pad
-        );
+      return pts;
+    }
+
+    function sampleRectPoints(nx1, ny1, nx2, ny2) {
+      const minX = Math.min(nx1, nx2);
+      const maxX = Math.max(nx1, nx2);
+      const minY = Math.min(ny1, ny2);
+      const maxY = Math.max(ny1, ny2);
+      return [
+        ...sampleSegmentPoints(minX, minY, maxX, minY, 16),
+        ...sampleSegmentPoints(maxX, minY, maxX, maxY, 16),
+        ...sampleSegmentPoints(maxX, maxY, minX, maxY, 16),
+        ...sampleSegmentPoints(minX, maxY, minX, minY, 16),
+      ];
+    }
+
+    function sampleCirclePoints(nx1, ny1, nx2, ny2, steps = 64) {
+      const rx = Math.abs(nx2 - nx1) / 2;
+      const ry = Math.abs(ny2 - ny1) / 2;
+      const cx = Math.min(nx1, nx2) + rx;
+      const cy = Math.min(ny1, ny2) + ry;
+      const pts = [];
+      for (let i = 0; i <= steps; i++) {
+        const theta = (i / steps) * Math.PI * 2;
+        pts.push({
+          nx: cx + rx * Math.cos(theta),
+          ny: cy + ry * Math.sin(theta),
+        });
       }
-      if (shape.type === 'circle') {
-        const rx = Math.max(1, Math.abs(x2 - x1) / 2);
-        const ry = Math.max(1, Math.abs(y2 - y1) / 2);
-        const cx = Math.min(x1, x2) + rx;
-        const cy = Math.min(y1, y2) + ry;
-        const normDist = Math.hypot((px - cx) / rx, (py - cy) / ry);
-        const avgR = (rx + ry) / 2;
-        return Math.abs(normDist - 1) * avgR <= pad;
-      }
-      return false;
+      return pts;
     }
 
     function eraseVectorShapesAt(px, py) {
       const radius = Number(eraserSizeInput?.value || 20) / 2;
-      const beforeLen = vectorShapes.length;
-      if (beforeLen === 0) return false;
-      const remaining = vectorShapes.filter((shape) => !isPointHittingShape(px, py, shape, radius));
-      if (remaining.length !== beforeLen) {
-        vectorShapes = remaining;
+      if (vectorShapes.length === 0) return false;
+
+      let anyModified = false;
+      const nextShapes = [];
+
+      for (const shape of vectorShapes) {
+        const hitPad = radius + Math.max(2, (shape.lineWidth * getZoomRatio()) / 2);
+
+        if (shape.type === 'pen') {
+          const { segments, modified } = splitPolylineByEraser(shape.points, px, py, hitPad);
+          if (modified) {
+            anyModified = true;
+            segments.forEach((segPts, idx) => {
+              if (segPts.length >= 2) {
+                nextShapes.push({
+                  ...cloneVectorShape(shape),
+                  id: idx === 0 ? shape.id : `${shape.id}_part_${idx}_${Date.now()}`,
+                  points: segPts,
+                });
+              }
+            });
+          } else {
+            nextShapes.push(shape);
+          }
+        } else if (shape.type === 'line' || shape.type === 'arrow') {
+          const pts = sampleSegmentPoints(shape.nx1, shape.ny1, shape.nx2, shape.ny2, 32);
+          const { segments, modified } = splitPolylineByEraser(pts, px, py, hitPad);
+          if (modified) {
+            anyModified = true;
+            segments.forEach((segPts, idx) => {
+              if (segPts.length >= 2) {
+                nextShapes.push({
+                  id: `${shape.id}_seg_${idx}_${Date.now()}`,
+                  type: 'pen',
+                  points: segPts,
+                  lineWidth: shape.lineWidth,
+                  color: shape.color,
+                });
+              }
+            });
+          } else {
+            nextShapes.push(shape);
+          }
+        } else if (shape.type === 'rect') {
+          const pts = sampleRectPoints(shape.nx1, shape.ny1, shape.nx2, shape.ny2);
+          const { segments, modified } = splitPolylineByEraser(pts, px, py, hitPad);
+          if (modified) {
+            anyModified = true;
+            segments.forEach((segPts, idx) => {
+              if (segPts.length >= 2) {
+                nextShapes.push({
+                  id: `${shape.id}_rect_${idx}_${Date.now()}`,
+                  type: 'pen',
+                  points: segPts,
+                  lineWidth: shape.lineWidth,
+                  color: shape.color,
+                });
+              }
+            });
+          } else {
+            nextShapes.push(shape);
+          }
+        } else if (shape.type === 'circle') {
+          const pts = sampleCirclePoints(shape.nx1, shape.ny1, shape.nx2, shape.ny2, 72);
+          const { segments, modified } = splitPolylineByEraser(pts, px, py, hitPad);
+          if (modified) {
+            anyModified = true;
+            segments.forEach((segPts, idx) => {
+              if (segPts.length >= 2) {
+                nextShapes.push({
+                  id: `${shape.id}_arc_${idx}_${Date.now()}`,
+                  type: 'pen',
+                  points: segPts,
+                  lineWidth: shape.lineWidth,
+                  color: shape.color,
+                });
+              }
+            });
+          } else {
+            nextShapes.push(shape);
+          }
+        } else {
+          nextShapes.push(shape);
+        }
+      }
+
+      if (anyModified) {
+        vectorShapes = nextShapes;
         if (selectedShapeId && !vectorShapes.some((s) => s.id === selectedShapeId)) {
           selectedShapeId = null;
         }
         renderVectorShapes();
-        return true;
       }
-      return false;
+      return anyModified;
     }
 
     function buildVectorShapeNode(shape, zoomRatio = getZoomRatio()) {
@@ -1141,10 +1305,9 @@
         node.addEventListener('click', (e) => {
           if (activeTool === 'eraser') {
             e.stopPropagation();
+            const pt = getStackCoords(e, vectorDrawLayerEl);
             pushUndoState();
-            vectorShapes = vectorShapes.filter((s) => s.id !== shape.id);
-            if (selectedShapeId === shape.id) selectedShapeId = null;
-            renderVectorShapes();
+            eraseVectorShapesAt(pt.x, pt.y);
             return;
           }
           if (activeTool === 'none') {
@@ -1179,6 +1342,8 @@
     function renderOverlays() {
       overlayLayerEl.innerHTML = '';
       const zoomRatio = getZoomRatio();
+      const { w: layerW, h: layerH } = getLayerDimensions();
+      const padPx = getPad015CmPx(zoomRatio);
 
       for (const sItem of stickerItems) {
         const def = STICKER_DEFS.find((d) => d.key === sItem.key);
@@ -1258,22 +1423,49 @@
         box.className = 'floating-text-box' + (item.id === selectedTextId ? ' selected' : '');
         box.style.left = `${posPx.x}px`;
         box.style.top = `${posPx.y}px`;
+        box.style.padding = `${padPx.toFixed(2)}px`;
         box.style.color = item.color;
         box.style.fontSize = `${scaledFontSize}px`;
         box.style.fontFamily = FONT_FAMILY;
 
+        if (item.nw) {
+          box.style.width = `${Math.max(24, item.nw * layerW)}px`;
+        }
+        if (item.nh) {
+          box.style.height = `${Math.max(20, item.nh * layerH)}px`;
+        }
+
+        const contentSpan = document.createElement('span');
+        contentSpan.className = 'floating-text-content';
+        contentSpan.textContent = item.text;
+
+        const resizeHandle = document.createElement('div');
+        resizeHandle.className = 'text-resize-handle';
+        resizeHandle.title = '拖曳調整文字框長與寬';
+
         const actions = document.createElement('div');
         actions.className = 'floating-text-actions';
+
+        const fitSpan = document.createElement('span');
+        fitSpan.textContent = '貼合文字';
+        fitSpan.addEventListener('pointerdown', (e) => e.stopPropagation());
+        fitSpan.addEventListener('click', (e) => {
+          e.stopPropagation();
+          pushUndoState();
+          item.nw = null;
+          item.nh = null;
+          renderOverlays();
+        });
 
         const editSpan = document.createElement('span');
         editSpan.textContent = '編輯';
         editSpan.addEventListener('pointerdown', (e) => e.stopPropagation());
         editSpan.addEventListener('click', (e) => {
           e.stopPropagation();
-          const updated = prompt('修改文字內容：', item.text);
-          if (updated && updated.trim()) {
+          const updated = prompt('修改文字內容（可用 Enter 換行）：', item.text);
+          if (updated !== null && updated.trim()) {
             pushUndoState();
-            item.text = updated.trim();
+            item.text = updated;
             renderOverlays();
           }
         });
@@ -1290,16 +1482,53 @@
           renderOverlays();
         });
 
-        const contentSpan = document.createElement('span');
-        contentSpan.textContent = item.text;
-
         box.appendChild(contentSpan);
+        box.appendChild(resizeHandle);
         box.appendChild(actions);
+        actions.appendChild(fitSpan);
         actions.appendChild(editSpan);
         actions.appendChild(delSpan);
 
+        // 右下角把手：拖曳調整長與寬
+        resizeHandle.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+          pushUndoState();
+          resizingTextId = item.id;
+          textResizeStartX = e.clientX;
+          textResizeStartY = e.clientY;
+          const rect = box.getBoundingClientRect();
+          textResizeStartW = rect.width;
+          textResizeStartH = rect.height;
+          resizeHandle.setPointerCapture(e.pointerId);
+        });
+
+        resizeHandle.addEventListener('pointermove', (e) => {
+          if (resizingTextId !== item.id) return;
+          const dx = e.clientX - textResizeStartX;
+          const dy = e.clientY - textResizeStartY;
+          const nextW = Math.max(24, textResizeStartW + dx);
+          const nextH = Math.max(20, textResizeStartH + dy);
+          const { w, h } = getLayerDimensions();
+          item.nw = nextW / w;
+          item.nh = nextH / h;
+          box.style.width = `${nextW}px`;
+          box.style.height = `${nextH}px`;
+        });
+
+        const stopTextResize = (e) => {
+          if (resizingTextId === item.id) {
+            resizingTextId = null;
+            if (e && resizeHandle.hasPointerCapture(e.pointerId)) {
+              resizeHandle.releasePointerCapture(e.pointerId);
+            }
+          }
+        };
+        resizeHandle.addEventListener('pointerup', stopTextResize);
+        resizeHandle.addEventListener('pointercancel', stopTextResize);
+
+        // 文字框本體：拖曳移動位置
         box.addEventListener('pointerdown', (e) => {
-          if (activeTool === 'hand') return;
+          if (activeTool === 'hand' || resizingTextId === item.id) return;
           e.stopPropagation();
           selectedTextId = item.id;
           selectedStickerId = null;
@@ -1351,14 +1580,16 @@
         e.stopPropagation();
         const rect = overlayLayerEl.getBoundingClientRect();
         const rel = pxToRel(e.clientX - rect.left, e.clientY - rect.top);
-        const content = prompt('請輸入要加入的文字：', '');
-        if (content && content.trim()) {
+        const content = prompt('請輸入要加入的文字（可多行）：', '');
+        if (content !== null && content.trim()) {
           pushUndoState();
           const newText = {
             id: `txt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            text: content.trim(),
+            text: content,
             nx: rel.nx,
             ny: rel.ny,
+            nw: null,
+            nh: null,
             fontSize: clampFontSize(fontSizeInput?.value || 20),
             color: colorInput?.value || '#ff0000',
           };
@@ -1409,6 +1640,7 @@
       exportCanvas.height = canvas.height;
       const exportCtx = exportCanvas.getContext('2d');
       const zoomRatio = getZoomRatio();
+      const padPx = getPad015CmPx(zoomRatio);
 
       exportCtx.drawImage(canvas, 0, 0);
       exportCtx.drawImage(drawCanvas, 0, 0);
@@ -1444,11 +1676,16 @@
       for (const item of textItems) {
         const posPx = relToPx(item.nx, item.ny);
         const scaledFontSize = Math.max(6, Math.round(item.fontSize * zoomRatio));
+        const lineHeight = scaledFontSize * 1.3;
+        const lines = String(item.text).split('\n');
+
         exportCtx.save();
         exportCtx.font = `bold ${scaledFontSize}px ${FONT_FAMILY}`;
         exportCtx.fillStyle = item.color;
         exportCtx.textBaseline = 'top';
-        exportCtx.fillText(item.text, posPx.x + 8 * zoomRatio, posPx.y + 4 * zoomRatio);
+        lines.forEach((line, idx) => {
+          exportCtx.fillText(line, posPx.x + padPx, posPx.y + padPx + idx * lineHeight);
+        });
         exportCtx.restore();
       }
 
@@ -1671,7 +1908,6 @@
     setTool('none');
   </script>
 
-  <!-- 模組腳本：獨立載入 PDF 與圖層 -->
   <script type="module">
     const PDF_URL = './chart.pdf';
     const HIDDEN_NUMBERS = [90, 16, 54];
